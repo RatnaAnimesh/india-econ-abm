@@ -118,3 +118,16 @@ trade_policy:
     Manufacturing: 0.3
     Services: 0.2
   exchange_rate_shock: 1.0
+io_matrix:
+  Agriculture:
+    Agriculture: 0.1
+    Manufacturing: 0.2
+    Services: 0.05
+  Manufacturing:
+    Agriculture: 0.15
+    Manufacturing: 0.25
+    Services: 0.15
+  Services:
+    Agriculture: 0.05
+    Manufacturing: 0.15
+    Services: 0.2

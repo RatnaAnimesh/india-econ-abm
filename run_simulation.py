@@ -1,5 +1,6 @@
 import os
 import argparse
+import pandas as pd
 from model import IndianEconomyModel
 
 def run_simulation(ticks=10, policy_shocks=None):
@@ -24,6 +25,13 @@ def run_simulation(ticks=10, policy_shocks=None):
     results_df = model.datacollector.get_model_vars_dataframe()
     results_df.index.name = "Tick"
     
+    # Flatten the State_Output dictionary into separate columns
+    if 'State_Output' in results_df.columns:
+        state_df = results_df['State_Output'].apply(pd.Series)
+        # Prefix columns with 'State_' to avoid name collisions
+        state_df = state_df.add_prefix('State_')
+        results_df = pd.concat([results_df.drop('State_Output', axis=1), state_df], axis=1)
+        
     # Save results
     out_dir = os.path.join(os.path.dirname(__file__), "data", "processed")
     os.makedirs(out_dir, exist_ok=True)

@@ -42,17 +42,23 @@ class FirmAgent:
         # Fiscal Policy (with potential shocks)
         self.corporate_tax_rate = config['fiscal_policy']['corporate_tax_rate']
         base_gst = config['fiscal_policy']['gst_rates'][self.sector]
-        # Shock: additive or multiplier. Let's make it additive (e.g. -0.05 for a 5% GST cut)
         gst_shock = self.shocks.get('gst_shock', 0.0)
         self.gst_rate = max(0.0, base_gst + gst_shock)
         
         # Monetary Policy (with potential shocks)
         base_repo = config['monetary_policy']['rbi_repo_rate']
-        repo_shock = self.shocks.get('repo_rate_shock', 0.0) # e.g. +0.02 for a 200 bps hike
+        repo_shock = self.shocks.get('repo_rate_shock', 0.0)
         self.interest_rate = max(0.0, base_repo + repo_shock + config['monetary_policy']['corporate_spread'])
         
         # Trade Policy
         self.export_propensity = config['trade_policy']['export_propensity'][self.sector]
+        
+        # IO Matrix Requirements
+        self.io_reqs = {
+            "Agriculture": config['io_matrix']['Agriculture'][self.sector],
+            "Manufacturing": config['io_matrix']['Manufacturing'][self.sector],
+            "Services": config['io_matrix']['Services'][self.sector]
+        }
         
         # State variables for tracking
         self.output = 0
@@ -66,32 +72,40 @@ class FirmAgent:
         
         # 2. Nominal Conversion & Trade
         price_level = self.model.price_level
-        # Shock: exchange rate shock. e.g. +0.10 means 10% depreciation
         base_exchange_shock = config['trade_policy']['exchange_rate_shock']
         exchange_shock = base_exchange_shock + self.shocks.get('exchange_rate_shock', 0.0)
         
-        # Exports benefit from depreciation (shock > 1)
         trade_multiplier = 1.0 + (self.export_propensity * (exchange_shock - 1.0))
         nominal_revenue = real_output * price_level * trade_multiplier
-        self.output = nominal_revenue  # Track nominal revenue
+        self.output = nominal_revenue  
         
-        # 3. Pay Wages (Indexed to inflation)
+        # 3. Supply Chain Intermediate Consumption
+        # If supply of an input drops, the cost to procure it spikes
+        intermediate_cost = 0.0
+        for input_sec, req_pct in self.io_reqs.items():
+            base_cost = nominal_revenue * req_pct
+            supply_multiplier = self.model.supply_multipliers.get(input_sec, 1.0)
+            # Prevent division by zero, max price spike is 5x
+            scarcity_price_modifier = min(5.0, 1.0 / max(0.2, supply_multiplier))
+            intermediate_cost += (base_cost * scarcity_price_modifier)
+        
+        # 4. Pay Wages (Indexed to inflation)
         wage_bill = self.wage_rate * price_level * self.labor
         
-        # 4. Pay Interest on Debt
+        # 5. Pay Interest on Debt
         interest_payment = self.debt * self.interest_rate
         
-        # 5. Depreciation (Nominal cost of capital replacement)
+        # 6. Depreciation
         depreciation_cost = self.capital * self.depreciation_rate * price_level
         
-        # 6. Taxes (GST)
+        # 7. Taxes (GST)
         gst_payment = nominal_revenue * self.gst_rate
         self.model.total_tax_collection += gst_payment
         
-        # 7. Calculate EBT (Earnings Before Tax)
-        ebt = nominal_revenue - wage_bill - depreciation_cost - interest_payment - gst_payment
+        # 8. Calculate EBT (Earnings Before Tax)
+        ebt = nominal_revenue - intermediate_cost - wage_bill - depreciation_cost - interest_payment - gst_payment
         
-        # 8. Corporate Tax & Net Profit
+        # 9. Corporate Tax & Net Profit
         if ebt > 0:
             corporate_tax = ebt * self.corporate_tax_rate
             self.model.total_tax_collection += corporate_tax
@@ -99,39 +113,38 @@ class FirmAgent:
         else:
             self.profit = ebt
             
-        # 9. Update Capital, Labor, and Debt based on Profitability
+        # 10. Update Capital, Labor, and Debt based on Profitability
         if self.profit > 0:
-            # Reinvest profit into new capital
             real_investment = (self.profit * self.investment_rate) / price_level
             self.capital += real_investment
             
-            # Optionally pay down some debt with remaining profit
             debt_paydown = (self.profit * (1 - self.investment_rate)) * 0.1
             self.debt = max(0, self.debt - debt_paydown)
             
-            # Hire workers
             self.labor = int(self.labor * self.profit_labor_growth_rate)
         else:
-            # Loss scenario
             self.capital -= (depreciation_cost / price_level)
             self.labor = int(self.labor * self.loss_labor_shrink_rate)
-            # Add loss to debt (borrowing to survive)
             self.debt += abs(self.profit)
             
             # Bankruptcy Check
             if self.debt > (self.capital * price_level * 2.0):
                 self.bankruptcies += 1
-                self.debt = self.debt * 0.1 # Debt restructuring
-                self.capital = max(0.01, self.capital * 0.5) # Sell off assets
-                self.labor = max(1, int(self.labor * 0.5)) # Massive layoffs
+                self.debt = self.debt * 0.1
+                self.capital = max(0.01, self.capital * 0.5)
+                self.labor = max(1, int(self.labor * 0.5))
                 
-        # Prevent zero or negative capital/labor
         self.capital = max(0.01, self.capital)
         self.labor = max(1.0, self.labor)
-        
-        # 10. Technological Progress (TFP Growth)
         self.tfp *= (1.0 + self.tfp_growth_rate)
 
+
+def compute_state_output(model):
+    """Aggregate nominal output by state."""
+    state_totals = {}
+    for agent in model.firm_agents:
+        state_totals[agent.state] = state_totals.get(agent.state, 0.0) + agent.output
+    return state_totals
 
 class IndianEconomyModel(mesa.Model):
     """The macro-economy model containing all firms and government."""
@@ -152,6 +165,15 @@ class IndianEconomyModel(mesa.Model):
         self.price_level = 1.0
         self.inflation_rate = config['monetary_policy']['target_inflation_rate']
         self.total_tax_collection = 0.0
+        
+        # IO Supply Tracking
+        self.supply_multipliers = {
+            "Agriculture": 1.0,
+            "Manufacturing": 1.0,
+            "Services": 1.0
+        }
+        self.previous_supply = None
+        self.baseline_supply = None
         
         # Create agents
         for idx, row in synthetic_firms_df.iterrows():
@@ -186,7 +208,11 @@ class IndianEconomyModel(mesa.Model):
                 "Svc_Output": lambda m: sum([a.output for a in m.firm_agents if a.sector == "Services"]),
                 "Agri_Profit": lambda m: sum([a.profit for a in m.firm_agents if a.sector == "Agriculture"]),
                 "Mfg_Profit": lambda m: sum([a.profit for a in m.firm_agents if a.sector == "Manufacturing"]),
-                "Svc_Profit": lambda m: sum([a.profit for a in m.firm_agents if a.sector == "Services"])
+                "Svc_Profit": lambda m: sum([a.profit for a in m.firm_agents if a.sector == "Services"]),
+                "State_Output": compute_state_output,
+                "Agri_Price_Multiplier": lambda m: 1.0 / max(0.2, m.supply_multipliers.get("Agriculture", 1.0)),
+                "Mfg_Price_Multiplier": lambda m: 1.0 / max(0.2, m.supply_multipliers.get("Manufacturing", 1.0)),
+                "Svc_Price_Multiplier": lambda m: 1.0 / max(0.2, m.supply_multipliers.get("Services", 1.0))
             }
         )
 
@@ -202,5 +228,22 @@ class IndianEconomyModel(mesa.Model):
         random.shuffle(self.firm_agents)
         for agent in self.firm_agents:
             agent.step()
+            
+        # Calculate sector supply for the next tick's intermediate consumption
+        current_supply = {
+            "Agriculture": sum([a.output for a in self.firm_agents if a.sector == "Agriculture"]),
+            "Manufacturing": sum([a.output for a in self.firm_agents if a.sector == "Manufacturing"]),
+            "Services": sum([a.output for a in self.firm_agents if a.sector == "Services"])
+        }
+        
+        if self.baseline_supply is None:
+            self.baseline_supply = current_supply
+        else:
+            # Update supply multipliers based on deviation from baseline
+            for sec in current_supply:
+                if self.baseline_supply[sec] > 0:
+                    self.supply_multipliers[sec] = current_supply[sec] / self.baseline_supply[sec]
+                    
+        self.previous_supply = current_supply
             
         self.datacollector.collect(self)

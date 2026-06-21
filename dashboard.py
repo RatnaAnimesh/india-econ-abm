@@ -80,7 +80,7 @@ if df is not None and not df.empty:
     st.markdown("---")
     
     # Create Tabs for different analytical views
-    tab1, tab2, tab3 = st.tabs(["📊 Macroeconomy", "🏭 Sectoral Divergence", "⚖️ Inequality & Bankruptcies"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Macroeconomy", "🏭 Sectoral Divergence", "⚖️ Inequality & Bankruptcies", "🗺️ Regional Economy", "🔗 Supply Chain Contagion"])
     
     with tab1:
         colA, colB = st.columns(2)
@@ -111,8 +111,45 @@ if df is not None and not df.empty:
         chart_data_gini = df.set_index("Tick")[["Gini_Coefficient"]]
         st.line_chart(chart_data_gini, color="#ff4b4b")
         
-
-    # Show raw data
+    with tab4:
+        st.subheader("State GDP Leaderboard (Final Year)")
+        st.markdown("Comparing Nominal Output across Indian States.")
+        
+        # Filter columns that start with 'State_'
+        state_cols = [c for c in df.columns if c.startswith('State_')]
+        if state_cols:
+            # Get the values for the final tick
+            state_data = final_row[state_cols].sort_values(ascending=False)
+            
+            # Show top 10 states
+            top_states = state_data.head(10)
+            
+            # Clean up index names for chart (remove 'State_' prefix)
+            top_states.index = top_states.index.str.replace('State_', '')
+            
+            st.bar_chart(top_states, horizontal=True)
+            
+            with st.expander("View All States GDP"):
+                all_states = state_data.copy()
+                all_states.index = all_states.index.str.replace('State_', '')
+                st.dataframe(all_states.to_frame(name="Nominal Output (Crores)").style.format("{:,.0f}"))
+        else:
+            st.warning("Regional data not found in simulation results.")
+            
+    with tab5:
+        st.subheader("Supply Chain Scarcity (Intermediate Input Costs)")
+        st.markdown("Tracks the cost multiplier for procuring intermediate goods. A value > 1.0 means the sector experienced bankruptcies/shortages, driving up prices for downstream firms.")
+        
+        # Check if price multipliers exist
+        sc_cols = ["Agri_Price_Multiplier", "Mfg_Price_Multiplier", "Svc_Price_Multiplier"]
+        available_cols = [c for c in sc_cols if c in df.columns]
+        
+        if available_cols:
+            chart_data_sc = df.set_index("Tick")[available_cols]
+            st.line_chart(chart_data_sc)
+        else:
+            st.warning("Supply Chain pricing data not found in simulation results.")
+            
     with st.expander("View Raw Data Table"):
         st.dataframe(df.style.format("{:,.3f}"))
 else:
