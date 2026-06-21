@@ -1,7 +1,7 @@
 import os
 import argparse
 import pandas as pd
-from model import IndianEconomyModel
+from src.engine.model import IndianEconomyModel
 
 def run_simulation(ticks=10, policy_shocks=None, save_path=None):
     print(f"Initializing Indian Economy ABM for {ticks} ticks (years)...")

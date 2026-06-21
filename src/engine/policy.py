@@ -4,13 +4,14 @@ from src.engine.run_simulation import run_simulation
 
 class PolicyIntervention:
     """Represents a specific macroeconomic policy shock to inject into the economy."""
-    def __init__(self, name, description, repo_rate_shock=0.0, gst_shock=0.0, exchange_rate_shock=0.0):
+    def __init__(self, name, description, repo_rate_shock=0.0, gst_shock=0.0, exchange_rate_shock=0.0, demonetisation_shock=0.0):
         self.name = name
         self.description = description
         self.shocks = {
             'repo_rate_shock': repo_rate_shock,
             'gst_shock': gst_shock,
-            'exchange_rate_shock': exchange_rate_shock
+            'exchange_rate_shock': exchange_rate_shock,
+            'demonetisation_shock': demonetisation_shock
         }
 
 class PolicyAnalyzer:

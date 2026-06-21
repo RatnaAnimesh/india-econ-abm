@@ -130,16 +130,21 @@ class SyntheticFirmGenerator:
             "Sector": sectors
         })
         
-        # 5. Assign Capital (Log-Normal, anchored by State averages)
+        # 5. Assign Capital (Zipf's Law Distribution, S^-gamma, gamma approx 2)
+        # We use a Pareto distribution which is the continuous equivalent of Zipf.
+        # Pareto alpha parameter = gamma - 1. So for gamma=2, alpha=1.
         state_avg_cap = dict(zip(mca_df['State'], mca_df['Total_Capital'] / mca_df['Total_Counts']))
-        sigma = config['initialization']['lognormal_sigma_default']
         
-        def sample_capital(state):
+        def sample_capital_zipf(state):
+            # We anchor the min value (xm) based on the state average to keep realistic scales
+            # Mean of Pareto(xm, alpha) = xm * alpha / (alpha - 1) for alpha > 1
+            # For alpha=1.1, Mean = xm * 11 -> xm = Mean / 11
+            alpha = 1.1 
             mu = state_avg_cap[state]
-            log_mu = np.log(mu) - (sigma**2) / 2
-            return max(0.01, np.random.lognormal(mean=log_mu, sigma=sigma))
+            xm = max(0.01, mu / 11.0)
+            return np.random.pareto(alpha) * xm + xm
             
-        firms['Capital'] = firms['State'].apply(sample_capital)
+        firms['Capital'] = firms['State'].apply(sample_capital_zipf)
         
         # 6. Assign Real KLEMS Cobb-Douglas parameters
         firms['Cap_share'] = firms['Sector'].map(lambda s: klems_shares[s]['Cap_share'])
