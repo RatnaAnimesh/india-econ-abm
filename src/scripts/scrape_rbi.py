@@ -3,7 +3,7 @@ urllib3.disable_warnings()
 from bs4 import BeautifulSoup
 
 url = "https://rbi.org.in/Scripts/BS_ViewBulletin.aspx"
-res = requests.get(url, verify=False, headers={"User-Agent": "Mozilla/5.0"})
+res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
 soup = BeautifulSoup(res.text, "html.parser")
 
 found = False

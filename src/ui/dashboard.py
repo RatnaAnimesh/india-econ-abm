@@ -1,7 +1,15 @@
+import sys
+import os
 import streamlit as st
 import pandas as pd
-import subprocess
-import os
+
+# Fix path for imports
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(os.path.dirname(BASE_DIR))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+from src.engine.policy import PolicyIntervention, PolicyAnalyzer
 
 # Configure the Streamlit page
 st.set_page_config(page_title="Indian Economy ABM Dashboard", layout="wide")
@@ -11,8 +19,14 @@ st.markdown("Inject macroeconomic shocks and monitor the distributional impact a
 # Set paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(os.path.dirname(BASE_DIR))
-RESULTS_PATH = os.path.join(ROOT_DIR, "data", "processed", "simulation_results.csv")
-SIMULATION_SCRIPT = os.path.join(ROOT_DIR, "src", "engine", "run_simulation.py")
+RESULTS_PATH = os.path.join(ROOT_DIR, "data", "processed", "scenario_results.csv")
+BASELINE_PATH = os.path.join(ROOT_DIR, "data", "processed", "baseline_results.csv")
+
+analyzer = PolicyAnalyzer(baseline_csv_path=BASELINE_PATH)
+if analyzer.baseline_data is None:
+    st.info("Generating unshocked Baseline simulation. This may take a minute...")
+    analyzer.set_baseline(ticks=10)
+    st.success("Baseline generated!")
 
 # Sidebar Controls & Policy Shocks
 st.sidebar.header("Policy Shock Laboratory")
@@ -24,25 +38,22 @@ exchange_shock = st.sidebar.slider("Exchange Rate Shock (INR)", min_value=-0.20,
 
 st.sidebar.markdown("---")
 
-# Function to run the simulation with args
 def run_simulation(repo, gst, exchange):
     with st.spinner('Running 10-year ABM Simulation with Policy Shocks...'):
         try:
-            result = subprocess.run([
-                'python', SIMULATION_SCRIPT,
-                '--repo_shock', str(repo),
-                '--gst_shock', str(gst),
-                '--exchange_shock', str(exchange)
-            ], capture_output=True, text=True, cwd=ROOT_DIR)
-            
-            if result.returncode == 0:
-                st.sidebar.success("Simulation completed successfully!")
-            else:
-                st.sidebar.error(f"Simulation failed: {result.stderr}")
+            intervention = PolicyIntervention(
+                name="Custom User Scenario",
+                description=f"Repo Shock: {repo}, GST Shock: {gst}, FX Shock: {exchange}",
+                repo_rate_shock=repo,
+                gst_shock=gst,
+                exchange_rate_shock=exchange
+            )
+            analyzer.evaluate_intervention(intervention, ticks=10, save_path=RESULTS_PATH)
+            st.sidebar.success("Simulation completed successfully!")
         except Exception as e:
             st.sidebar.error(f"Error executing simulation: {str(e)}")
 
-if st.sidebar.button("Inject Shocks & Re-run Simulation", type="primary"):
+if st.sidebar.button("Inject Shocks & Compare vs Baseline", type="primary"):
     run_simulation(repo_shock, gst_shock, exchange_shock)
 
 # Load Data
@@ -57,25 +68,28 @@ df = load_data()
 if df is not None and not df.empty:
     st.subheader("Final Tick Macroeconomic KPIs")
     
-    initial_row = df.iloc[0]
-    final_row = df.iloc[-1]
+    # If we have baseline data, let's use it for deltas
+    base_final = analyzer.baseline_data.iloc[-1]
     
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         st.metric(label="Nominal Output (Crores)", 
                   value=f"₹{final_row['Total_Output']:,.0f}", 
-                  delta=f"{((final_row['Total_Output'] - initial_row['Total_Output']) / initial_row['Total_Output']) * 100:.1f}%")
+                  delta=f"{((final_row['Total_Output'] - base_final['Total_Output']) / base_final['Total_Output']) * 100:.1f}% vs Baseline")
     with col2:
         st.metric(label="Total Net Profit", 
-                  value=f"₹{final_row['Total_Profit']:,.0f}")
+                  value=f"₹{final_row['Total_Profit']:,.0f}",
+                  delta=f"₹{final_row['Total_Profit'] - base_final['Total_Profit']:,.0f} vs Base")
     with col3:
         st.metric(label="Total Tax Revenue", 
                   value=f"₹{final_row['Total_Tax_Revenue']:,.0f}", 
-                  delta="Govt Income")
+                  delta=f"₹{final_row['Total_Tax_Revenue'] - base_final['Total_Tax_Revenue']:,.0f} vs Base")
     with col4:
+        diff_bankruptcies = final_row['Bankruptcies'] - base_final['Bankruptcies']
         st.metric(label="Bankruptcies (Total)", 
                   value=f"{final_row['Bankruptcies']:,.0f} firms", 
+                  delta=f"{diff_bankruptcies:,.0f} vs Base",
                   delta_color="inverse")
 
     st.markdown("---")
@@ -86,14 +100,20 @@ if df is not None and not df.empty:
     with tab1:
         colA, colB = st.columns(2)
         with colA:
-            st.subheader("Nominal Output & Tax Revenue")
-            chart_data_op = df.set_index("Tick")[["Total_Output", "Total_Tax_Revenue"]]
+            st.subheader("Nominal Output vs Baseline")
+            chart_data_op = pd.DataFrame({
+                "Scenario Output": df.set_index("Tick")["Total_Output"],
+                "Baseline Output": analyzer.baseline_data.set_index("Tick")["Total_Output"]
+            })
             st.line_chart(chart_data_op)
             
         with colB:
-            st.subheader("Corporate Debt vs Profit Trajectory")
-            chart_data_cl = df.set_index("Tick")[["Total_Debt", "Total_Profit"]]
-            st.line_chart(chart_data_cl)
+            st.subheader("Tax Revenue vs Baseline")
+            chart_data_tax = pd.DataFrame({
+                "Scenario Tax": df.set_index("Tick")["Total_Tax_Revenue"],
+                "Baseline Tax": analyzer.baseline_data.set_index("Tick")["Total_Tax_Revenue"]
+            })
+            st.line_chart(chart_data_tax)
             
     with tab2:
         colC, colD = st.columns(2)
@@ -107,10 +127,13 @@ if df is not None and not df.empty:
             st.line_chart(chart_data_sect_prof)
             
     with tab3:
-        st.subheader("Wealth Inequality (Gini Coefficient of Capital)")
-        st.markdown("A value of 0 means perfect equality. A value closer to 1 means extreme inequality (few mega-corporations own all capital).")
-        chart_data_gini = df.set_index("Tick")[["Gini_Coefficient"]]
-        st.line_chart(chart_data_gini, color="#ff4b4b")
+        st.subheader("Wealth Inequality (Gini Coefficient) vs Baseline")
+        st.markdown("A value of 0 means perfect equality. A value closer to 1 means extreme inequality.")
+        chart_data_gini = pd.DataFrame({
+            "Scenario Gini": df.set_index("Tick")["Gini_Coefficient"],
+            "Baseline Gini": analyzer.baseline_data.set_index("Tick")["Gini_Coefficient"]
+        })
+        st.line_chart(chart_data_gini, color=["#ff4b4b", "#4b4bff"])
         
     with tab4:
         st.subheader("State GDP Leaderboard (Final Year)")

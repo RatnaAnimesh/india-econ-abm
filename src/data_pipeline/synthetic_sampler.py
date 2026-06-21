@@ -3,14 +3,17 @@ import pandas as pd
 import numpy as np
 import yaml
 
-with open(os.path.join(os.path.dirname(__file__), "config.yaml"), "r") as f:
+# Determine repo root dir (3 levels up from this file)
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+with open(os.path.join(ROOT_DIR, "config", "config.yaml"), "r") as f:
     config = yaml.safe_load(f)
 
 class SyntheticFirmGenerator:
     def __init__(self):
         self.num_agents = config['run']['n_agents']
-        self.data_dir = os.path.join(os.path.dirname(__file__), "data", "raw")
-        self.out_dir = os.path.join(os.path.dirname(__file__), "data", "processed")
+        self.data_dir = os.path.join(ROOT_DIR, "data", "raw")
+        self.out_dir = os.path.join(ROOT_DIR, "data", "processed")
         os.makedirs(self.out_dir, exist_ok=True)
 
     def _load_klems_data(self):
@@ -29,16 +32,14 @@ class SyntheticFirmGenerator:
         )
         
         # Classify into Macro Sectors
-        def categorize(desc):
-            desc = str(desc).lower()
-            if "agriculture" in desc:
-                return "Agriculture"
-            elif any(s in desc for s in ["trade", "hotel", "transport", "financial", "business", "public", "education", "health", "post", "storage"]):
-                return "Services"
-            else:
+        def categorize_klems(desc):
+            desc = str(desc).strip().lower()
+            if "agriculture" in desc: return "Agriculture"
+            if "mining" in desc or "manufacturing" in desc or "food" in desc or "textile" in desc or "wood" in desc or "paper" in desc or "coke" in desc or "chemical" in desc or "rubber" in desc or "mineral" in desc or "metal" in desc or "machinery" in desc or "electrical" in desc or "transport equipment" in desc or "electricity" in desc or "construction" in desc:
                 return "Manufacturing"
+            return "Services"
                 
-        df['Macro_Sector'] = df['KLEMS Industry Description'].apply(categorize)
+        df['Macro_Sector'] = df['KLEMS Industry Description'].apply(categorize_klems)
         
         # Compute mean share by macro sector
         sector_shares = df.groupby('Macro_Sector')[['Cap_share', 'Lab_share']].mean().to_dict('index')

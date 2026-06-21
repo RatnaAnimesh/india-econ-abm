@@ -2,9 +2,13 @@ import os
 from datagovindia import DataGovIndia
 import pandas as pd
 
-API_KEY = '579b464db66ec23bdd000001cdd3946e44ce4aad7209ff7b23ac571b'
+API_KEY = os.environ.get("DATA_GOV_API_KEY", "YOUR_API_KEY_HERE")
 
 def download_sample():
+    if API_KEY == "YOUR_API_KEY_HERE":
+        print("Please set DATA_GOV_API_KEY environment variable.")
+        return
+
     data_gov = DataGovIndia(API_KEY)
     
     print("Updating metadata...")

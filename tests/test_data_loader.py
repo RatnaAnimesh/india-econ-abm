@@ -3,7 +3,7 @@ import yaml
 import pytest
 import json
 from datetime import datetime, timedelta, timezone
-from data_loader import DataLoader
+from src.data_pipeline.data_loader import DataLoader
 
 def test_fetch_macro_data_staleness(tmp_path):
     # Setup dummy config and snapshot

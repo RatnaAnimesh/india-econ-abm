@@ -37,7 +37,7 @@ initialization:
   authorised_to_paidup_default: 1.25
   cash_ratio_default: 0.15
   debt_equity_ratio_default: 0.6
-  lognormal_sigma_default: 1.3633915165437007
+  lognormal_sigma_default: 2.1
   capital_to_labor_scaling: 20.0
 markets:
   tatonnement:
@@ -52,32 +52,10 @@ markets:
     max_labor_adjustment_pct: 0.1
 government:
   corporate_tax_small: 0.25
-  corporate_tax_large: 0.3
+  corporate_tax_large: 0.30
   revenue_threshold_crore: 400
-  gst_rates:
-    A: 0.05
-    B: 0.18
-    C: 0.18
-    D: 0.18
-    E: 0.18
-    F: 0.18
-    G: 0.18
-    H: 0.18
-    I: 0.18
-    J: 0.18
-    K: 0.18
-    L: 0.18
-    M: 0.18
-    N: 0.18
-    O: 0.18
-    P: 0.18
-    Q: 0.18
-    R: 0.18
-    S: 0.18
-    T: 0.18
-    U: 0.18
-  capex_budgeted_crore: 0.0
-  capex_effective_crore: 0.0
+  capex_budgeted_crore: 1111000.0 # 11.11 Lakh Crore from Union Budget
+  capex_effective_crore: 1000000.0
 trade:
   hs_to_nic_crosswalk_path: calibration/hs_to_nic_crosswalk.csv
 grid:
@@ -100,14 +78,14 @@ agent_logic:
   loss_labor_shrink_rate: 0.95
   tfp_growth_rates:
     Agriculture: 0.931810810511548
-    Manufacturing: 0.764077942731552
-    Services: -0.11911939475040811
+    Manufacturing: 0.758889311999112
+    Services: -0.11081758557850414
 fiscal_policy:
   corporate_tax_rate: 0.25
   gst_rates:
-    Agriculture: 0.05
-    Manufacturing: 0.18
-    Services: 0.18
+    Agriculture: 0.00   # GST 2.0 exempts agriculture
+    Manufacturing: 0.18 # Standard GST
+    Services: 0.18      # Standard GST
 monetary_policy:
   rbi_repo_rate: 0.065
   corporate_spread: 0.03

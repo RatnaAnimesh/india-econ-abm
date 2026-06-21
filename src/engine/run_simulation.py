@@ -3,7 +3,7 @@ import argparse
 import pandas as pd
 from model import IndianEconomyModel
 
-def run_simulation(ticks=10, policy_shocks=None):
+def run_simulation(ticks=10, policy_shocks=None, save_path=None):
     print(f"Initializing Indian Economy ABM for {ticks} ticks (years)...")
     if policy_shocks:
         print(f"Applying Policy Shocks: {policy_shocks}")
@@ -31,14 +31,22 @@ def run_simulation(ticks=10, policy_shocks=None):
         state_df = state_df.add_prefix('State_')
         results_df = pd.concat([results_df.drop('State_Output', axis=1), state_df], axis=1)
         
+    # Scale aggregated volume metrics by 100 (since 15k agents represents 1.5M firms)
+    scale_factor = 100.0
+    non_volume_metrics = ['Price_Level', 'Gini_Coefficient', 'Agri_Price_Multiplier', 'Mfg_Price_Multiplier', 'Svc_Price_Multiplier']
+    for col in results_df.columns:
+        if col not in non_volume_metrics:
+            results_df[col] = results_df[col] * scale_factor
+            
     # Save results
-    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    out_dir = os.path.join(root_dir, "data", "processed")
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, "simulation_results.csv")
+    if not save_path:
+        root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        out_dir = os.path.join(root_dir, "data", "processed")
+        os.makedirs(out_dir, exist_ok=True)
+        save_path = os.path.join(out_dir, "simulation_results.csv")
     
-    results_df.to_csv(out_path)
-    print(f"Results saved to {out_path}")
+    results_df.to_csv(save_path)
+    print(f"Results saved to {save_path}")
     print("\n=== Final Macroeconomic State ===")
     print(results_df.tail(1).T)
 

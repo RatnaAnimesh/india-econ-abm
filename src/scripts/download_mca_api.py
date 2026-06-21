@@ -2,10 +2,16 @@ import requests
 import json
 import os
 
+API_KEY = os.environ.get("DATA_GOV_API_KEY", "YOUR_API_KEY_HERE")
+
 def download_mca_maharashtra():
+    if API_KEY == "YOUR_API_KEY_HERE":
+        print("Please set DATA_GOV_API_KEY environment variable.")
+        return
+
     url = "https://api.data.gov.in/resource/4dbe5667-7b6b-41d7-82af-211562424d9a"
     params = {
-        "api-key": "579b464db66ec23bdd000001cdd3946e44ce4aad7209ff7b23ac571b",
+        "api-key": API_KEY,
         "format": "json",
         "filters[CompanyStateCode]": "maharashtra",
         "limit": "1000"

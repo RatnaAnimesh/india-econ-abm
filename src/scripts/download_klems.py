@@ -5,7 +5,7 @@ url = "https://rbidocs.rbi.org.in/rdocs/content/docs/INDIAKLEMS08072024.xlsx"
 headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
 
 print(f"Downloading {url}...")
-res = requests.get(url, headers=headers, verify=False)
+res = requests.get(url, headers=headers)
 
 if res.status_code == 200:
     os.makedirs("data/raw", exist_ok=True)
