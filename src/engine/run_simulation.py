@@ -8,10 +8,9 @@ def run_simulation(ticks=10, policy_shocks=None):
     if policy_shocks:
         print(f"Applying Policy Shocks: {policy_shocks}")
     
-    # Path to the M2 output
-    data_path = os.path.join(os.path.dirname(__file__), "data", "processed", "synthetic_firms.csv")
-    
-    # Initialize the model
+    # Use relative pathing from root
+    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    data_path = os.path.join(root_dir, "data", "processed", "synthetic_firms.csv")
     model = IndianEconomyModel(data_path=data_path, policy_shocks=policy_shocks)
     
     # Run the simulation loop
@@ -33,7 +32,8 @@ def run_simulation(ticks=10, policy_shocks=None):
         results_df = pd.concat([results_df.drop('State_Output', axis=1), state_df], axis=1)
         
     # Save results
-    out_dir = os.path.join(os.path.dirname(__file__), "data", "processed")
+    root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    out_dir = os.path.join(root_dir, "data", "processed")
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, "simulation_results.csv")
     

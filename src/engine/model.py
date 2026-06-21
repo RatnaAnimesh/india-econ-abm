@@ -4,7 +4,11 @@ import os
 import random
 import numpy as np
 
-with open(os.path.join(os.path.dirname(__file__), "config.yaml"), "r") as f:
+# Go up two levels to root, then into config
+root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+config_path = os.path.join(root_dir, "config", "config.yaml")
+
+with open(config_path, "r") as f:
     config = yaml.safe_load(f)
 
 def compute_gini(model):

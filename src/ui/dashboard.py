@@ -10,8 +10,9 @@ st.markdown("Inject macroeconomic shocks and monitor the distributional impact a
 
 # Set paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-RESULTS_PATH = os.path.join(BASE_DIR, "data", "processed", "simulation_results.csv")
-SIMULATION_SCRIPT = os.path.join(BASE_DIR, "run_simulation.py")
+ROOT_DIR = os.path.dirname(os.path.dirname(BASE_DIR))
+RESULTS_PATH = os.path.join(ROOT_DIR, "data", "processed", "simulation_results.csv")
+SIMULATION_SCRIPT = os.path.join(ROOT_DIR, "src", "engine", "run_simulation.py")
 
 # Sidebar Controls & Policy Shocks
 st.sidebar.header("Policy Shock Laboratory")
@@ -32,7 +33,7 @@ def run_simulation(repo, gst, exchange):
                 '--repo_shock', str(repo),
                 '--gst_shock', str(gst),
                 '--exchange_shock', str(exchange)
-            ], capture_output=True, text=True, cwd=BASE_DIR)
+            ], capture_output=True, text=True, cwd=ROOT_DIR)
             
             if result.returncode == 0:
                 st.sidebar.success("Simulation completed successfully!")
