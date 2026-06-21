@@ -15,6 +15,12 @@ class SyntheticFirmGenerator:
         self.data_dir = os.path.join(ROOT_DIR, "data", "raw")
         self.out_dir = os.path.join(ROOT_DIR, "data", "processed")
         os.makedirs(self.out_dir, exist_ok=True)
+        
+        # Seed generator for reproducibility
+        import random
+        seed = config['run'].get('master_seed', 42)
+        random.seed(seed)
+        np.random.seed(seed)
 
     def _load_klems_data(self):
         """Loads and calculates macro sector average Capital and Labor shares from RBI KLEMS."""

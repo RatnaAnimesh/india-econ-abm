@@ -18,6 +18,8 @@ class MigrationEngine:
         Evaluate utility for agents in Cleared/Agri zones (0) 
         to move to Residential zones (1) near Commercial zones (2).
         """
+        from src.engine.model import FirmAgent
+        
         grid = self.model.grid
         if not hasattr(grid, 'zoning'):
             return
@@ -49,8 +51,12 @@ class MigrationEngine:
                 dest = res_zones[idx]
                 
                 # Proxy for local wage (average wage of firms near dest)
-                # For simplicity, we just use the global base wage * 1.2 for urban premium
-                expected_wage = hh.reservation_wage * 1.2
+                neighbors = grid.get_neighborhood(dest, moore=True, include_center=True, radius=10)
+                local_firms = [a for a in grid.get_cell_list_contents(neighbors) if isinstance(a, FirmAgent)]
+                if local_firms:
+                    expected_wage = np.mean([f.wage_rate * self.model.price_level for f in local_firms])
+                else:
+                    expected_wage = hh.reservation_wage * 1.2 # fallback
                 
                 # Proxy for cost of living (land price at dest)
                 cost_of_living = grid.land_prices[dest[0]][dest[1]] * 0.01

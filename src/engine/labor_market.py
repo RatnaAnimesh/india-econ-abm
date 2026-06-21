@@ -20,18 +20,18 @@ class LaborMarket:
         """
         Executes the matching protocol between searching firms and unemployed households.
         """
+        from src.engine.model import FirmAgent
+        
         # Collect vacancies from firms
-        # A firm wants to hire if its target production exceeds its labor capacity
-        # For simplicity, if actual sales > max capacity, open vacancies
         searching_firms = []
         for firm in self.model.agents:
-            if hasattr(firm, 'expected_demand') and hasattr(firm, 'inventory'):
+            if isinstance(firm, FirmAgent):
                 target_prod = firm.expected_demand * (1.0 + firm.buffer_ratio) - firm.inventory
-                current_cap = firm.tfp * (firm.capital ** firm.cap_share) * (firm.labor ** firm.lab_share)
+                max_capacity = firm.tfp * (firm.capital ** firm.cap_share) * (firm.labor ** firm.lab_share)
                 
-                if target_prod > current_cap:
+                if target_prod > max_capacity:
                     # Estimate needed labor (inverted Cobb-Douglas approximation)
-                    needed_ratio = target_prod / max(0.01, current_cap)
+                    needed_ratio = target_prod / max(0.01, max_capacity)
                     desired_labor = int(firm.labor * needed_ratio)
                     vacancies = desired_labor - firm.labor
                     if vacancies > 0:
@@ -43,9 +43,10 @@ class LaborMarket:
                         
         unemployed_households = [hh for hh in self.model.households if not hh.employed]
         
+        # Keep track of which firms got matches to adjust wage rates later
+        unmatched_firms = set(f['firm'] for f in searching_firms)
+        
         # Spatial Gravity Matching
-        # In a highly populated simulation, doing O(N*M) is too slow.
-        # We sample a subset of firms for each worker.
         for hh in unemployed_households:
             if not searching_firms:
                 break # No jobs left
@@ -76,11 +77,19 @@ class LaborMarket:
                 hh.employed = True
                 hh.employer = best_match['firm']
                 hh.wage = best_match['wage_offer']
-                best_match['firm'].labor += 1
+                best_match['firm'].employees.append(hh)
                 best_match['vacancies'] -= 1
+                
+                # Remove from unmatched set since it got at least one match
+                unmatched_firms.discard(best_match['firm'])
                 
                 if best_match['vacancies'] <= 0:
                     searching_firms.remove(best_match)
+                    
+        # Adapt wage rates for firms that couldn't fill their vacancies
+        # If a firm was searching but didn't fill its vacancies, it raises its wage offer
+        for firm in unmatched_firms:
+            firm.wage_rate = min(firm.wage_rate * 1.05, 0.1) # Raise wage rate, cap at 0.1
                     
     def update_reservation_wages(self):
         """Applies hysteresis to household reservation wages."""

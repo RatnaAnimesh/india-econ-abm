@@ -16,8 +16,8 @@ with open(config_path, "r") as f:
     config = yaml.safe_load(f)
 
 def compute_gini(model):
-    """Compute the Gini coefficient of capital distribution."""
-    agent_wealths = [a.capital for a in model.agents if hasattr(a, 'capital')]
+    """Compute the Gini coefficient of firm capital distribution."""
+    agent_wealths = [a.capital for a in model.agents if isinstance(a, FirmAgent)]
     x = sorted(agent_wealths)
     N = len(agent_wealths)
     if N == 0 or sum(x) == 0:
@@ -27,45 +27,36 @@ def compute_gini(model):
 
 class FirmAgent(Agent):
     """A firm in the Indian economy."""
-    def __init__(self, model, unique_id, sector, state, capital, labor, cap_share, lab_share, debt, shocks=None):
+    def __init__(self, model, unique_id, sector, state, capital, cap_share, lab_share, debt, shocks=None, labor=1.0):
         super().__init__(model)
         self.cin = unique_id  # Store the CIN since Mesa 3 generates its own unique_id
         self.sector = sector
         self.state = state
         self.capital = capital
-        self.labor = labor
         self.cap_share = cap_share
         self.lab_share = lab_share
         self.debt = debt
         self.deposits = debt * 0.1 # initial liquidity buffer
-        self.net_worth = self.capital + self.deposits - self.debt
+        self.employees = []
+        self.intermediate_revenue = 0.0
+        self.final_revenue = 0.0
         self.shocks = shocks or {}
         
         # Load empirical parameters from config
-        self.wage_rate = config['agent_logic']['baseline_wage_rate']
+        self.wage_rate = config['agent_logic']['baseline_wage_rate'] * np.random.uniform(0.9, 1.1)
         self.depreciation_rate = config['agent_logic']['depreciation_rate']
         self.investment_rate = config['agent_logic']['investment_rate']
         self.profit_labor_growth_rate = config['agent_logic']['profit_labor_growth_rate']
         self.loss_labor_shrink_rate = config['agent_logic']['loss_labor_shrink_rate']
         self.tfp_growth_rate = config['agent_logic']['tfp_growth_rates'][self.sector] / 100.0
         
-        # Fiscal Policy (with potential shocks)
+        # Fiscal Policy
         self.corporate_tax_rate = config['fiscal_policy']['corporate_tax_rate']
         base_gst = config['fiscal_policy']['gst_rates'][self.sector]
-        gst_shock = self.shocks.get('gst_shock', 0.0)
-        self.gst_rate = max(0.0, base_gst + gst_shock)
+        self.gst_rate = base_gst
         
-        # Fetch real-time macro parameters via DataLoader
-        from src.data_pipeline.data_loader import DataLoader
-        loader = DataLoader(config_path=config_path)
-        macro_data = loader.fetch_macro_data(allow_stale=True)
-        
-        base_repo = config['monetary_policy']['rbi_repo_rate']
-        if "repo_rate" in macro_data and "value" in macro_data["repo_rate"]:
-            base_repo = macro_data["repo_rate"]["value"]
-            
-        repo_shock = self.shocks.get('repo_rate_shock', 0.0)
-        self.interest_rate = max(0.0, base_repo + repo_shock + config['monetary_policy']['corporate_spread'])
+        # Fetch interest rate based on global repo rate
+        self.interest_rate = max(0.0, self.model.repo_rate + config['monetary_policy']['corporate_spread'])
         
         # Trade Policy
         self.export_propensity = config['trade_policy']['export_propensity'][self.sector]
@@ -78,8 +69,8 @@ class FirmAgent(Agent):
         }
         
         # State variables for tracking
-        self.output = 0
-        self.profit = 0
+        self.output = 0.0
+        self.profit = 0.0
         self.tfp = 1.0 # Total Factor Productivity (A)
         self.bankruptcies = 0
         
@@ -89,9 +80,16 @@ class FirmAgent(Agent):
         self.learning_rate = 0.2 # eta
         self.buffer_ratio = 0.1 # nu
         
-    def step(self):
-        # 0. Adaptive Expectations
-        # Update expected demand based on previous sales (output)
+    @property
+    def labor(self):
+        return max(1.0, float(len(self.employees)))
+        
+    @property
+    def net_worth(self):
+        return self.capital + self.deposits - self.debt
+        
+    def produce(self):
+        """Phase 1: Determine target demand and produce goods."""
         if self.expected_demand == 0.0:
             self.expected_demand = self.capital * 0.5 # initial heuristic
             
@@ -99,77 +97,103 @@ class FirmAgent(Agent):
         self.expected_demand = self.expected_demand + self.learning_rate * (sales_last_period - self.expected_demand)
         
         target_production = max(0.0, self.expected_demand * (1.0 + self.buffer_ratio) - self.inventory)
-
-        # 1. Produce Output (Cobb-Douglas Capacity limit)
         max_capacity = self.tfp * (self.capital ** self.cap_share) * (self.labor ** self.lab_share)
         real_output = min(target_production, max_capacity)
         
-        # Update inventory
         self.inventory += real_output
         
-        # 2. Nominal Conversion & Trade
+    def export_sales(self):
+        """Phase 2: Export goods to rest of the world (exogenous cash injection)."""
         price_level = self.model.price_level
         base_exchange_shock = config['trade_policy']['exchange_rate_shock']
-        exchange_shock = base_exchange_shock + self.shocks.get('exchange_rate_shock', 0.0)
+        exchange_shock = base_exchange_shock + getattr(self.model, 'exchange_rate_shock_val', 0.0)
         
-        trade_multiplier = 1.0 + (self.export_propensity * (exchange_shock - 1.0))
+        # Export demand based on propensity and exchange rate
+        export_demand = self.expected_demand * self.export_propensity * exchange_shock
+        real_exports = min(self.inventory, export_demand)
+        self.inventory = max(0.0, self.inventory - real_exports)
         
-        # Assume all produced output + inventory is offered to the market.
-        # In a full SFC model, actual sales depend on household consumption matching.
-        # Here we approximate sales as market clearing up to expected demand + random noise.
-        actual_real_sales = min(self.inventory, self.expected_demand * np.random.uniform(0.9, 1.1))
-        self.inventory -= actual_real_sales
+        export_rev = real_exports * price_level * exchange_shock
+        self.deposits += export_rev
+        self.final_revenue += export_rev
+        self.output += export_rev
         
-        nominal_revenue = actual_real_sales * price_level * trade_multiplier
-        self.output = nominal_revenue  
-        
-        # 3. Supply Chain Intermediate Consumption
-        intermediate_cost = 0.0
+    def purchase_inputs(self):
+        """Phase 3: Route supply chain intermediate demands to other firms."""
+        self.intermediate_cost = 0.0
         for input_sec, req_pct in self.io_reqs.items():
-            base_cost = nominal_revenue * req_pct
-            
-            # Use Supply Chain Network for Paton Admissibility routing
+            base_cost = self.output * req_pct
+            if base_cost <= 0.0:
+                continue
+                
             if hasattr(self.model, 'supply_chain'):
                 routed_cost = self.model.supply_chain.evaluate_supply_shock(self, input_sec, base_cost)
-                intermediate_cost += routed_cost
+                self.intermediate_cost += routed_cost
             else:
                 supply_multiplier = self.model.supply_multipliers.get(input_sec, 1.0)
                 scarcity_price_modifier = min(5.0, 1.0 / max(0.2, supply_multiplier))
-                intermediate_cost += (base_cost * scarcity_price_modifier)
+                self.intermediate_cost += (base_cost * scarcity_price_modifier)
+                
+    def pay_financials(self):
+        """Phase 4: Pay wages, interest, and taxes."""
+        price_level = self.model.price_level
         
-        # 4. Pay Wages (Indexed to inflation)
-        wage_bill = self.wage_rate * price_level * self.labor
-        
-        # 5. Pay Interest on Debt
-        interest_payment = self.debt * self.interest_rate
-        
-        # 6. Depreciation
-        depreciation_cost = self.capital * self.depreciation_rate * price_level
-        
-        # 7. Taxes (GST)
-        gst_payment = nominal_revenue * self.gst_rate
-        self.model.total_tax_collection += gst_payment
-        
-        # 8. Calculate EBT (Earnings Before Tax)
-        ebt = nominal_revenue - intermediate_cost - wage_bill - depreciation_cost - interest_payment - gst_payment
-        
-        # 9. Corporate Tax & Net Profit
-        if ebt > 0:
-            corporate_tax = ebt * self.corporate_tax_rate
-            self.model.total_tax_collection += corporate_tax
-            self.profit = ebt - corporate_tax
-        else:
-            self.profit = ebt
+        # 1. Pay Wages (directly to employees' deposits)
+        self.wages_paid = 0.0
+        for emp in self.employees:
+            wage_to_pay = emp.wage
+            self.deposits -= wage_to_pay
+            emp.deposits += wage_to_pay
+            self.wages_paid += wage_to_pay
             
-        # 10. Update Capital, Labor, and Debt based on Profitability
-        # Depreciation is unconditionally applied
-        self.capital -= (depreciation_cost / price_level)
+        # Bank overdraft coverage
+        if self.deposits < 0.0:
+            self.debt += abs(self.deposits)
+            self.deposits = 0.0
+            
+        # 2. Pay Interest
+        self.interest_payment = self.debt * self.interest_rate
+        self.deposits -= self.interest_payment
+        if self.deposits < 0.0:
+            self.debt += abs(self.deposits)
+            self.deposits = 0.0
+            
+        # 3. GST Payment
+        self.gst_payment = self.output * self.gst_rate
+        self.deposits -= self.gst_payment
+        if self.deposits < 0.0:
+            self.debt += abs(self.deposits)
+            self.deposits = 0.0
+        self.model.total_tax_collection += self.gst_payment
         
-        # Minsky-Keen Investment Dynamics
+        # 4. Depreciation (non-cash charge, reduces capital value)
+        self.depreciation_cost = self.capital * self.depreciation_rate * price_level
+        self.capital = max(0.01, self.capital - (self.depreciation_cost / price_level))
+        
+        # 5. Earnings Before Tax (EBT)
+        self.ebt = self.output - self.intermediate_cost - self.wages_paid - self.depreciation_cost - self.interest_payment - self.gst_payment
+        
+        # 6. Corporate Tax & Net Profit
+        if self.ebt > 0:
+            self.corporate_tax = self.ebt * self.corporate_tax_rate
+            self.deposits -= self.corporate_tax
+            if self.deposits < 0.0:
+                self.debt += abs(self.deposits)
+                self.deposits = 0.0
+            self.model.total_tax_collection += self.corporate_tax
+            self.profit = self.ebt - self.corporate_tax
+        else:
+            self.corporate_tax = 0.0
+            self.profit = self.ebt
+            
+    def invest_and_finance(self):
+        """Phase 5: Minsky investment demand, loan financing, and demographic updates."""
+        price_level = self.model.price_level
+        
         # Calculate Profit Rate (pi_r)
-        if nominal_revenue > 0:
-            wage_share = wage_bill / nominal_revenue
-            debt_ratio = self.debt / nominal_revenue
+        if self.output > 0:
+            wage_share = self.wages_paid / self.output
+            debt_ratio = self.debt / self.output
         else:
             wage_share = 1.0
             debt_ratio = 1.0
@@ -177,14 +201,11 @@ class FirmAgent(Agent):
         profit_rate = 1.0 - wage_share - (self.interest_rate * debt_ratio)
         
         # Logistic Investment Function kappa(pi_r)
-        # Investment increases as profit rate rises, bounded by upper limit
         kappa = self.investment_rate / (1.0 + np.exp(-5.0 * (profit_rate - 0.05)))
-        
         real_investment_desired = self.capital * kappa
         nominal_investment_desired = real_investment_desired * price_level
         
-        # Financing the Investment (SFC constraints)
-        retained_earnings = max(0, self.profit)
+        retained_earnings = max(0.0, self.profit)
         external_financing_needed = nominal_investment_desired - retained_earnings
         
         if external_financing_needed > 0:
@@ -193,7 +214,7 @@ class FirmAgent(Agent):
             if loan_approved:
                 actual_nominal_investment = nominal_investment_desired
             else:
-                actual_nominal_investment = retained_earnings # Credit rationed
+                actual_nominal_investment = retained_earnings # rationed
         else:
             actual_nominal_investment = nominal_investment_desired
             # Pay down debt with remaining profit
@@ -202,52 +223,58 @@ class FirmAgent(Agent):
             
         # Execute Investment
         self.capital += (actual_nominal_investment / price_level)
-        
-        # Deduct used deposits (retained earnings portion)
         self.deposits -= actual_nominal_investment
-        if self.deposits < 0: self.deposits = 0
-        
-        # Labor firing if capacity heavily exceeds demand
-        if target_production < max_capacity * 0.8:
-            # Fire 10% of workers
-            fire_count = int(self.labor * 0.1)
-            self.labor = max(1, self.labor - fire_count)
-            # Find and update households
-            for hh in self.model.households:
-                if hh.employer == self and fire_count > 0:
+        if self.deposits < 0.0:
+            self.debt += abs(self.deposits)
+            self.deposits = 0.0
+            
+        # Fire labor if target production falls below capacity
+        max_capacity = self.tfp * (self.capital ** self.cap_share) * (self.labor ** self.lab_share)
+        target_prod = self.expected_demand * (1.0 + self.buffer_ratio) - self.inventory
+        if target_prod < max_capacity * 0.8 and len(self.employees) > 1:
+            fire_count = max(1, int(len(self.employees) * 0.1))
+            for _ in range(fire_count):
+                if self.employees:
+                    hh = self.employees.pop()
                     hh.employed = False
                     hh.employer = None
                     hh.wage = 0.0
-                    fire_count -= 1
-            self.debt += abs(self.profit)
+                    
+        # Bankruptcy check (debt outgrows collateral by 2x)
+        if self.debt > (self.capital * price_level * 2.0):
+            self.bankruptcies += 1
+            # Release employees
+            for hh in self.employees:
+                hh.employed = False
+                hh.employer = None
+                hh.wage = 0.0
+            self.employees = []
+            self.model.agents.remove(self)
+            return
             
-            # Bankruptcy Check (Minsky Ponzi collapse)
-            if self.debt > (self.capital * price_level * 2.0) or self.deposits < 0:
-                self.bankruptcies += 1
-                # Bank writes off the loan
-                self.model.commercial_bank.loans -= self.debt
-                self.model.commercial_bank.net_worth -= self.debt
-                self.model.agents.remove(self)
-                return  # Exit step
-                
         self.capital = max(0.01, self.capital)
-        self.labor = max(1.0, self.labor)
         self.tfp *= (1.0 + self.tfp_growth_rate)
-
 
 def compute_state_output(model):
     """Aggregate nominal output by state."""
     state_totals = {}
     for agent in model.agents:
-        if hasattr(agent, 'state') and hasattr(agent, 'output'):
+        if isinstance(agent, FirmAgent):
             state_totals[agent.state] = state_totals.get(agent.state, 0.0) + agent.output
     return state_totals
 
 class IndianEconomyModel(Model):
     """The macro-economy model containing all firms and government."""
-    def __init__(self, data_path=None, policy_shocks=None):
-        super().__init__()
-        self.policy_shocks = policy_shocks or {}
+    def __init__(self, data_path=None, policy_shocks=None, seed=None):
+        if seed is None:
+            seed = config['run'].get('master_seed', 42)
+            
+        super().__init__(seed=seed)
+        random.seed(seed)
+        np.random.seed(seed)
+        
+        self.policy_shocks = policy_shocks or []
+        self.current_tick = 0
         
         import pandas as pd
         if data_path:
@@ -260,9 +287,18 @@ class IndianEconomyModel(Model):
         # Macro variables
         self.price_level = 1.0
         self.inflation_rate = config['monetary_policy']['target_inflation_rate']
-        self.repo_rate = config['monetary_policy']['rbi_repo_rate']
         self.total_tax_collection = 0.0
+        self.exchange_rate_shock_val = 0.0
         
+        # Synchronized repo rate via macro data loader
+        from src.data_pipeline.data_loader import DataLoader
+        loader = DataLoader(config_path=config_path)
+        macro_data = loader.fetch_macro_data(allow_stale=True)
+        
+        self.repo_rate = config['monetary_policy']['rbi_repo_rate']
+        if "repo_rate" in macro_data and "value" in macro_data["repo_rate"]:
+            self.repo_rate = macro_data["repo_rate"]["value"]
+            
         self.capex_budgeted_crore = config.get('government', {}).get('capex_budgeted_crore', 0.0)
         
         # IO Supply Tracking
@@ -295,12 +331,11 @@ class IndianEconomyModel(Model):
         # Initialize SFC Institutional Sectors
         self.central_bank = CentralBankAgent(self, "RBI_01")
         self.commercial_bank = CommercialBankAgent(self, "BANK_01")
-        
         self.labor_market = LaborMarket(self)
-        
         self.aggregate_consumption = 0.0
         
-        # Create agents
+        # Create agents (firms)
+        self.firms = []
         for idx, row in synthetic_firms_df.iterrows():
             debt = row.get("Debt", 0.0)
             firm = FirmAgent(
@@ -309,12 +344,13 @@ class IndianEconomyModel(Model):
                 sector=row['Sector'],
                 state=row['State'],
                 capital=row['Capital'],
-                labor=row['Labor'],
                 cap_share=row['Cap_share'],
                 lab_share=row['Lab_share'],
                 debt=debt,
-                shocks=self.policy_shocks
+                shocks=None,
+                labor=row['Labor']
             )
+            self.firms.append(firm)
             
             # Place firm on Commercial grid cells if available, else random
             placed = False
@@ -326,16 +362,58 @@ class IndianEconomyModel(Model):
                     break
             if not placed:
                 self.grid.place_agent(firm, (np.random.randint(100), np.random.randint(100)))
+                
+        # Map grid cells to states based on nearest firm state
+        self.grid.cell_states = {}
+        firms_by_pos = {}
+        for a in self.agents:
+            if isinstance(a, FirmAgent) and a.pos:
+                firms_by_pos[a.pos] = a.state
+                
+        for x in range(100):
+            for y in range(100):
+                if firms_by_pos:
+                    nearest = min(firms_by_pos.keys(), key=lambda p: (p[0]-x)**2 + (p[1]-y)**2)
+                    self.grid.cell_states[(x, y)] = firms_by_pos[nearest]
+                else:
+                    self.grid.cell_states[(x, y)] = "Delhi"
             
-        # Create households (simplified Zipf distribution proxy)
+        # Create households and match to initial firm labor requirements
         num_households = self.num_agents * 10
         self.households = []
-        for i in range(num_households):
-            hh = HouseholdAgent(self, f"HH_{i}", initial_wealth=100.0, reservation_wage=config['agent_logic']['baseline_wage_rate'], skill_level=1.0)
-            self.households.append(hh)
-            self.commercial_bank.deposits += 100.0
+        
+        firm_target_labor = {}
+        for idx, row in synthetic_firms_df.iterrows():
+            req_labor = max(1, int(np.round(row['Labor'])))
+            firm_target_labor[row['CIN']] = req_labor
             
-            # Place household on Residential grid cells
+        hh_idx = 0
+        for firm in self.firms:
+            target = firm_target_labor[firm.cin]
+            for _ in range(target):
+                if hh_idx < num_households:
+                    hh = HouseholdAgent(self, f"HH_{hh_idx}", initial_wealth=100.0, reservation_wage=config['agent_logic']['baseline_wage_rate'], skill_level=1.0)
+                    hh.employed = True
+                    hh.employer = firm
+                    hh.wage = firm.wage_rate * self.price_level
+                    hh.state = firm.state
+                    firm.employees.append(hh)
+                    self.households.append(hh)
+                    hh_idx += 1
+                    
+        # Remaining households initialized as unemployed
+        while hh_idx < num_households:
+            random_firm = self.random.choice(self.firms)
+            hh = HouseholdAgent(self, f"HH_{hh_idx}", initial_wealth=100.0, reservation_wage=config['agent_logic']['baseline_wage_rate'], skill_level=1.0)
+            hh.employed = False
+            hh.employer = None
+            hh.wage = 0.0
+            hh.state = random_firm.state
+            self.households.append(hh)
+            hh_idx += 1
+            
+        # Place households on Residential cells
+        for hh in self.households:
             placed = False
             for _ in range(10):
                 x, y = np.random.randint(100), np.random.randint(100)
@@ -345,24 +423,30 @@ class IndianEconomyModel(Model):
                     break
             if not placed:
                 self.grid.place_agent(hh, (np.random.randint(100), np.random.randint(100)))
+            # Update state based on final location
+            hh.state = self.grid.cell_states[hh.pos]
             
+        # Balance commercial bank asset-liability reserves on day zero
+        self.commercial_bank.reserves = self.commercial_bank.deposits * self.commercial_bank.reserve_requirement
+        self.central_bank.reserves = self.commercial_bank.reserves
+        
         self.datacollector = DataCollector(
             model_reporters={
-                "Total_Output": lambda m: sum([getattr(a, 'output', 0.0) for a in m.agents]),
-                "Total_Profit": lambda m: sum([getattr(a, 'profit', 0.0) for a in m.agents]),
-                "Total_Capital": lambda m: sum([getattr(a, 'capital', 0.0) for a in m.agents]),
-                "Total_Labor": lambda m: sum([getattr(a, 'labor', 0) for a in m.agents]),
-                "Total_Debt": lambda m: sum([getattr(a, 'debt', 0.0) for a in m.agents]),
+                "Total_Output": lambda m: sum([a.output for a in m.agents if isinstance(a, FirmAgent)]),
+                "Total_Profit": lambda m: sum([a.profit for a in m.agents if isinstance(a, FirmAgent)]),
+                "Total_Capital": lambda m: sum([a.capital for a in m.agents if isinstance(a, FirmAgent)]),
+                "Total_Labor": lambda m: sum([a.labor for a in m.agents if isinstance(a, FirmAgent)]),
+                "Total_Debt": lambda m: sum([a.debt for a in m.agents if isinstance(a, FirmAgent)]),
                 "Total_Tax_Revenue": lambda m: m.total_tax_collection,
                 "Price_Level": lambda m: m.price_level,
-                "Bankruptcies": lambda m: sum([getattr(a, 'bankruptcies', 0) for a in m.agents]),
+                "Bankruptcies": lambda m: sum([a.bankruptcies for a in m.agents if isinstance(a, FirmAgent)]),
                 "Gini_Coefficient": compute_gini,
-                "Agri_Output": lambda m: sum([getattr(a, 'output', 0.0) for a in m.agents if getattr(a, 'sector', None) == "Agriculture"]),
-                "Mfg_Output": lambda m: sum([getattr(a, 'output', 0.0) for a in m.agents if getattr(a, 'sector', None) == "Manufacturing"]),
-                "Svc_Output": lambda m: sum([getattr(a, 'output', 0.0) for a in m.agents if getattr(a, 'sector', None) == "Services"]),
-                "Agri_Profit": lambda m: sum([getattr(a, 'profit', 0.0) for a in m.agents if getattr(a, 'sector', None) == "Agriculture"]),
-                "Mfg_Profit": lambda m: sum([getattr(a, 'profit', 0.0) for a in m.agents if getattr(a, 'sector', None) == "Manufacturing"]),
-                "Svc_Profit": lambda m: sum([getattr(a, 'profit', 0.0) for a in m.agents if getattr(a, 'sector', None) == "Services"]),
+                "Agri_Output": lambda m: sum([a.output for a in m.agents if isinstance(a, FirmAgent) and a.sector == "Agriculture"]),
+                "Mfg_Output": lambda m: sum([a.output for a in m.agents if isinstance(a, FirmAgent) and a.sector == "Manufacturing"]),
+                "Svc_Output": lambda m: sum([a.output for a in m.agents if isinstance(a, FirmAgent) and a.sector == "Services"]),
+                "Agri_Profit": lambda m: sum([a.profit for a in m.agents if isinstance(a, FirmAgent) and a.sector == "Agriculture"]),
+                "Mfg_Profit": lambda m: sum([a.profit for a in m.agents if isinstance(a, FirmAgent) and a.sector == "Manufacturing"]),
+                "Svc_Profit": lambda m: sum([a.profit for a in m.agents if isinstance(a, FirmAgent) and a.sector == "Services"]),
                 "State_Output": compute_state_output,
                 "Agri_Price_Multiplier": lambda m: 1.0 / max(0.2, m.supply_multipliers.get("Agriculture", 1.0)),
                 "Mfg_Price_Multiplier": lambda m: 1.0 / max(0.2, m.supply_multipliers.get("Manufacturing", 1.0)),
@@ -370,66 +454,113 @@ class IndianEconomyModel(Model):
             }
         )
 
+    def apply_shock(self, shock):
+        """Applies a specific macroeconomic policy shock to the model or agents."""
+        print(f"Applying policy shock: {shock}")
+        shock_type = shock.get('type')
+        val = shock.get('value', 0.0)
+        
+        if shock_type == 'repo_rate_shock':
+            self.repo_rate = max(0.0, self.repo_rate + val)
+            for firm in self.agents:
+                if isinstance(firm, FirmAgent):
+                    firm.interest_rate = max(0.0, self.repo_rate + config['monetary_policy']['corporate_spread'])
+                    
+        elif shock_type == 'gst_shock':
+            sector = shock.get('sector', None)
+            for firm in self.agents:
+                if isinstance(firm, FirmAgent):
+                    if sector is None or firm.sector == sector:
+                        firm.gst_rate = max(0.0, firm.gst_rate + val)
+                        
+        elif shock_type == 'exchange_rate_shock':
+            self.exchange_rate_shock_val += val
+            
+        elif shock_type == 'demonetisation_shock':
+            for hh in self.households:
+                if not hh.digital_adoption:
+                    cash_loss = hh.deposits * 0.5 * val
+                    hh.deposits -= cash_loss
+
     def step(self):
         """Advance the model by one step (one year)."""
-        # Inflate the price level
         self.price_level *= (1.0 + self.inflation_rate)
-        
-        # Reset tax collection for the year
         self.total_tax_collection = 0.0
-        
-        # Calculate Macro Bank Step
-        self.commercial_bank.step()
-        self.central_bank.step()
         self.aggregate_consumption = 0.0
         
-        # Step households (Kinetic trade / consumption)
-        for hh in self.households:
-            hh.step()
+        firms = [a for a in self.agents if isinstance(a, FirmAgent)]
+        
+        # 1. Distribute Capex back into the economy as demand
+        if self.capex_budgeted_crore > 0 and len(firms) > 0:
+            capex_per_firm = self.capex_budgeted_crore / len(firms)
+            for agent in firms:
+                agent.deposits += capex_per_firm
+                agent.output += capex_per_firm
+                self.total_tax_collection -= capex_per_firm
+                
+        # 2. Reset step variables for all firms
+        for firm in firms:
+            firm.intermediate_revenue = 0.0
+            firm.final_revenue = 0.0
+            firm.output = 0.0
+            firm.profit = 0.0
             
-        # Step all firm agents through the Mesa scheduler
-        self.agents.shuffle_do("step")
-        
-        # Run Labor Market matching
+        # Apply policy shocks scheduled for the current tick
+        for shock in self.policy_shocks:
+            if shock.get('tick', 0) == self.current_tick:
+                self.apply_shock(shock)
+                
+        # 3. Production Phase
+        for firm in firms:
+            firm.produce()
+            
+        # 4. Consumption Phase
+        for hh in self.households:
+            hh.consume()
+            
+        # 5. Exports Phase
+        for firm in firms:
+            firm.export_sales()
+            
+        # 6. Intermediate Supply Chain Phase
+        for firm in firms:
+            firm.purchase_inputs()
+            
+        # 7. Financials Phase (pay wages, interest, taxes, and calculate profit)
+        for firm in firms:
+            firm.pay_financials()
+            
+        # 8. Investment Phase (Minsky capital expansion)
+        for firm in firms:
+            firm.invest_and_finance()
+            
+        # 9. Market / Labor / Space steps
         self.labor_market.step()
-        
-        # Run Land Market auctions
         self.land_market.step()
-        
-        # Run Demographic Migration
         self.migration_engine.step()
-        
-        # Run Kinetic Wealth Exchange (Trade/Consumption and DBTs)
-        self.kinetics.step()
-        
-        # Run Stock Market Double Auction
+        self.kinetics.step() # wealth exchange between households
         self.stock_market.step()
-        
-        # Reset Supply Chain bottleneck trackers
         self.supply_chain.step()
+        
+        # Step bank and central bank
+        self.commercial_bank.step()
+        self.central_bank.step()
             
         # Calculate sector supply for the next tick's intermediate consumption
         current_supply = {
-            "Agriculture": sum([getattr(a, 'output', 0.0) for a in self.agents if getattr(a, 'sector', None) == "Agriculture"]),
-            "Manufacturing": sum([getattr(a, 'output', 0.0) for a in self.agents if getattr(a, 'sector', None) == "Manufacturing"]),
-            "Services": sum([getattr(a, 'output', 0.0) for a in self.agents if getattr(a, 'sector', None) == "Services"])
+            "Agriculture": sum([a.output for a in self.agents if isinstance(a, FirmAgent) and a.sector == "Agriculture"]),
+            "Manufacturing": sum([a.output for a in self.agents if isinstance(a, FirmAgent) and a.sector == "Manufacturing"]),
+            "Services": sum([a.output for a in self.agents if isinstance(a, FirmAgent) and a.sector == "Services"])
         }
         
         if self.baseline_supply is None:
             self.baseline_supply = current_supply
         else:
-            # Update supply multipliers based on deviation from baseline
             for sec in current_supply:
                 if self.baseline_supply[sec] > 0:
                     self.supply_multipliers[sec] = current_supply[sec] / self.baseline_supply[sec]
                     
         self.previous_supply = current_supply
-            
-        self.datacollector.collect(self)
         
-        # Distribute Capex back into the economy as demand (increases revenue of random firms)
-        firms_only = [a for a in self.agents if getattr(a, 'sector', None) is not None]
-        if self.capex_budgeted_crore > 0 and len(firms_only) > 0:
-            capex_per_firm = self.capex_budgeted_crore / len(firms_only)
-            for agent in firms_only:
-                agent.output += capex_per_firm
+        self.current_tick += 1
+        self.datacollector.collect(self)

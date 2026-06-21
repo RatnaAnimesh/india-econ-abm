@@ -24,6 +24,9 @@ class HouseholdAgent(Agent):
         # Consumption Variables
         self.mpc = 0.8 # Marginal Propensity to Consume
         
+        # Spatial location metadata
+        self.state = "Delhi"  # Will be mapped dynamically at model initialization
+        
         # Demonetisation / Digital Adoption State
         self.trust = np.random.uniform(0.1, 0.9)
         self.security = np.random.uniform(0.1, 0.9)
@@ -62,6 +65,51 @@ class HouseholdAgent(Agent):
             
         return self.digital_adoption
         
+    def consume(self):
+        """Spend a portion of wealth on consumption of domestic firms."""
+        if self.deposits <= 0.0:
+            return
+        
+        c_exp = self.deposits * (1.0 - self.mpc)
+        if c_exp <= 0.0:
+            return
+            
+        from src.engine.model import FirmAgent
+        # Try to find a local firm (in Moore neighborhood)
+        grid = self.model.grid
+        firm_candidates = []
+        if self.pos:
+            neighbors = grid.get_neighborhood(self.pos, moore=True, include_center=True, radius=10)
+            firm_candidates = [a for a in grid.get_cell_list_contents(neighbors) if isinstance(a, FirmAgent)]
+            
+        if not firm_candidates:
+            # Fallback to any firm in the model
+            firm_candidates = [a for a in self.model.agents if isinstance(a, FirmAgent)]
+            
+        if not firm_candidates:
+            return # No firms to buy from
+            
+        # Select a firm to buy from
+        firm = np.random.choice(firm_candidates)
+        
+        # Determine actual purchase based on firm inventory
+        price_level = self.model.price_level
+        real_demand = c_exp / price_level
+        
+        real_purchase = min(firm.inventory, real_demand)
+        if real_purchase > 0:
+            nominal_purchase = real_purchase * price_level
+            
+            # SFC transfer
+            self.deposits -= nominal_purchase
+            firm.deposits += nominal_purchase
+            
+            firm.inventory = max(0.0, firm.inventory - real_purchase)
+            firm.final_revenue += nominal_purchase
+            firm.output += nominal_purchase
+            
+            self.model.aggregate_consumption += nominal_purchase
+
     def step(self):
         # Check for demonetisation shock
         shock_level = getattr(self.model, 'policy_shocks', {}).get('demonetisation_shock', 0.0)
@@ -75,11 +123,11 @@ class HouseholdAgent(Agent):
             self.deposits -= cash_loss
             # This money leaves the system (shock constraint)
             
-        # 1. Receive Wage (if employed)
-        if self.employed and self.employer is not None:
-            self.deposits += self.wage
+        # Receive interest on deposits
+        interest_received = self.deposits * self.model.repo_rate * 0.95
+        self.deposits += interest_received
             
-        # 2. Update Net Worth
+        # Update Net Worth
         self.net_worth = self.deposits - self.loans
 
 
@@ -91,14 +139,42 @@ class CommercialBankAgent(Agent):
     """
     def __init__(self, model, unique_id):
         super().__init__(model)
-        self.loans = 0.0
-        self.deposits = 0.0
         self.reserves = 0.0
-        self.net_worth = 0.0
         
         # Policy Constraints
         self.capital_adequacy_ratio = 0.08
         self.reserve_requirement = 0.045 # Cash Reserve Ratio (CRR)
+        
+    @property
+    def loans(self):
+        """Sum of all outstanding debts in the economy."""
+        from src.engine.model import FirmAgent
+        firm_loans = sum(a.debt for a in self.model.agents if isinstance(a, FirmAgent))
+        hh_loans = sum(h.loans for h in self.model.households)
+        return firm_loans + hh_loans
+
+    @property
+    def deposits(self):
+        """Sum of all liquid balances in the economy."""
+        from src.engine.model import FirmAgent
+        firm_deposits = sum(a.deposits for a in self.model.agents if isinstance(a, FirmAgent))
+        hh_deposits = sum(h.deposits for h in self.model.households)
+        
+        # Handle developers and stock traders if they are initialized
+        dev_deposits = 0.0
+        if hasattr(self.model, 'land_market') and hasattr(self.model.land_market, 'developers'):
+            dev_deposits = sum(d.capital for d in self.model.land_market.developers)
+            
+        trader_deposits = 0.0
+        if hasattr(self.model, 'stock_market') and hasattr(self.model.stock_market, 'traders'):
+            trader_deposits = sum(t.cash for t in self.model.stock_market.traders)
+            
+        return firm_deposits + hh_deposits + dev_deposits + trader_deposits
+
+    @property
+    def net_worth(self):
+        """Balance sheet identity: Equity = Assets - Liabilities."""
+        return self.loans + self.reserves - self.deposits
         
     def request_loan(self, firm, amount):
         """
@@ -112,14 +188,9 @@ class CommercialBankAgent(Agent):
         if equity_ratio < self.capital_adequacy_ratio and self.loans > 0:
             return False
             
-        # Create money ex-nihilo
-        self.loans += amount
-        self.deposits += amount
-        
-        # Transfer deposit to firm
+        # Create money ex-nihilo by crediting the firm's deposits and debt
         firm.deposits += amount
         firm.debt += amount
-        
         return True
         
     def process_repayment(self, firm, amount):
@@ -128,26 +199,12 @@ class CommercialBankAgent(Agent):
         if actual_repayment > 0:
             firm.deposits -= actual_repayment
             firm.debt -= actual_repayment
-            
-            self.loans -= actual_repayment
-            self.deposits -= actual_repayment
-            
         return actual_repayment
 
     def step(self):
-        # 1. Collect Interest on Loans
-        interest_income = self.loans * self.model.repo_rate * 1.05 # Add spread
-        
-        # 2. Pay Interest on Deposits
-        interest_expense = self.deposits * self.model.repo_rate * 0.95
-        
-        profit = interest_income - interest_expense
-        self.net_worth += profit
-        
-        # Update Reserves with Central Bank
+        # Update Reserves with Central Bank based on current deposits
         required_reserves = self.deposits * self.reserve_requirement
         reserve_diff = required_reserves - self.reserves
-        # Bank uses its net worth/deposits to meet reserve req
         self.reserves += reserve_diff
         self.model.central_bank.reserves += reserve_diff
 
@@ -163,5 +220,5 @@ class CentralBankAgent(Agent):
         self.net_worth = 0.0
         
     def step(self):
-        # Central Bank logic (e.g. Taylor Rule for repo rate adjustment)
+        # Central Bank logic
         pass

@@ -77,9 +77,9 @@ agent_logic:
   profit_labor_growth_rate: 1.05
   loss_labor_shrink_rate: 0.95
   tfp_growth_rates:
-    Agriculture: 0.931810810511548
-    Manufacturing: 0.758889311999112
-    Services: -0.11081758557850414
+    Agriculture: 1.5
+    Manufacturing: 2.5
+    Services: 2.0
 fiscal_policy:
   corporate_tax_rate: 0.25
   gst_rates:
