@@ -1,0 +1,120 @@
+run:
+  master_seed: 42
+  n_seeds: 10
+  n_agents: 15000
+  n_steps: 12
+  max_staleness_days: 60
+data_sources:
+  data_gov_in:
+    resource_id: ''
+    api_key_env_var: DATA_GOV_IN_API_KEY
+  rbi_dbie:
+    tables:
+      policy_rates: policy_rates
+      forex_reserves: forex_reserves
+      money_stock: money_stock
+      exchange_rate: exchange_rate
+  mospi:
+    nas_series_url: ''
+    cpi_series_url: ''
+  plfs:
+    annual_bulletin_url: ''
+    quarterly_bulletin_url: ''
+  budget:
+    budget_at_glance_url: ''
+    expenditure_budget_url: ''
+  dgcis:
+    base_url: ''
+  indian_data_project:
+    base_url: ''
+    enabled: true
+calibration:
+  sector_parameters_path: calibration/sector_parameters.csv
+  nic_sector_map_path: calibration/nic_sector_map.csv
+  macro_snapshot_path: calibration/macro_snapshot.yaml
+initialization:
+  capital_to_paidup_default: 1.0
+  authorised_to_paidup_default: 1.25
+  cash_ratio_default: 0.15
+  debt_equity_ratio_default: 0.6
+  lognormal_sigma_default: 1.3633915165437007
+  capital_to_labor_scaling: 20.0
+markets:
+  tatonnement:
+    lambda_p: 0.1
+    lambda_w: 0.05
+    max_iter: 50
+    tol: 1e-4
+  credit:
+    spread_base_bps: 200
+    risk_multiplier: 0.01
+  labor:
+    max_labor_adjustment_pct: 0.1
+government:
+  corporate_tax_small: 0.25
+  corporate_tax_large: 0.3
+  revenue_threshold_crore: 400
+  gst_rates:
+    A: 0.05
+    B: 0.18
+    C: 0.18
+    D: 0.18
+    E: 0.18
+    F: 0.18
+    G: 0.18
+    H: 0.18
+    I: 0.18
+    J: 0.18
+    K: 0.18
+    L: 0.18
+    M: 0.18
+    N: 0.18
+    O: 0.18
+    P: 0.18
+    Q: 0.18
+    R: 0.18
+    S: 0.18
+    T: 0.18
+    U: 0.18
+  capex_budgeted_crore: 0.0
+  capex_effective_crore: 0.0
+trade:
+  hs_to_nic_crosswalk_path: calibration/hs_to_nic_crosswalk.csv
+grid:
+  lat_bounds:
+  - 6.5
+  - 37.5
+  lon_bounds:
+  - 68.0
+  - 97.5
+  cell_size_deg: 0.25
+policy: {}
+output:
+  runs_dir: outputs/runs
+  figures_dir: outputs/figures
+agent_logic:
+  baseline_wage_rate: 0.0186
+  depreciation_rate: 0.055
+  investment_rate: 0.6
+  profit_labor_growth_rate: 1.05
+  loss_labor_shrink_rate: 0.95
+  tfp_growth_rates:
+    Agriculture: 0.931810810511548
+    Manufacturing: 0.764077942731552
+    Services: -0.11911939475040811
+fiscal_policy:
+  corporate_tax_rate: 0.25
+  gst_rates:
+    Agriculture: 0.05
+    Manufacturing: 0.18
+    Services: 0.18
+monetary_policy:
+  rbi_repo_rate: 0.065
+  corporate_spread: 0.03
+  target_inflation_rate: 0.04
+trade_policy:
+  export_propensity:
+    Agriculture: 0.1
+    Manufacturing: 0.3
+    Services: 0.2
+  exchange_rate_shock: 1.0
