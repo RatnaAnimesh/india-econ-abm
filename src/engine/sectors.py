@@ -66,7 +66,7 @@ class HouseholdAgent(Agent):
         return self.digital_adoption
         
     def consume(self):
-        """Spend a portion of wealth on consumption of domestic firms."""
+        """Spend a portion of wealth on consumption of domestic firms in the same state."""
         if self.deposits <= 0.0:
             return
         
@@ -74,23 +74,18 @@ class HouseholdAgent(Agent):
         if c_exp <= 0.0:
             return
             
-        from src.engine.model import FirmAgent
-        # Try to find a local firm (in Moore neighborhood)
-        grid = self.model.grid
-        firm_candidates = []
-        if self.pos:
-            neighbors = grid.get_neighborhood(self.pos, moore=True, include_center=True, radius=10)
-            firm_candidates = [a for a in grid.get_cell_list_contents(neighbors) if isinstance(a, FirmAgent)]
+        # Look up pre-grouped firms by state from the model
+        state_firms = getattr(self.model, 'firms_by_state', {}).get(self.state, [])
+        if not state_firms:
+            # Fallback to all firms
+            from src.engine.model import FirmAgent
+            state_firms = [a for a in self.model.agents if isinstance(a, FirmAgent)]
             
-        if not firm_candidates:
-            # Fallback to any firm in the model
-            firm_candidates = [a for a in self.model.agents if isinstance(a, FirmAgent)]
-            
-        if not firm_candidates:
+        if not state_firms:
             return # No firms to buy from
             
-        # Select a firm to buy from
-        firm = np.random.choice(firm_candidates)
+        # Select a firm to buy from (fully reproducible using model random)
+        firm = self.model.random.choice(state_firms)
         
         # Determine actual purchase based on firm inventory
         price_level = self.model.price_level
@@ -121,11 +116,13 @@ class HouseholdAgent(Agent):
             # Unbanked cash is voided (86% of cash was demonetised, assume 50% loss for non-adopters)
             cash_loss = self.deposits * 0.5 * shock_level
             self.deposits -= cash_loss
-            # This money leaves the system (shock constraint)
+            self.model.commercial_bank._deposits -= cash_loss
             
         # Receive interest on deposits
         interest_received = self.deposits * self.model.repo_rate * 0.95
         self.deposits += interest_received
+        # Inform bank of deposit change
+        self.model.commercial_bank._deposits += interest_received
             
         # Update Net Worth
         self.net_worth = self.deposits - self.loans
@@ -141,35 +138,21 @@ class CommercialBankAgent(Agent):
         super().__init__(model)
         self.reserves = 0.0
         
+        # State variables for deposits and loans (updated in O(1) during steps)
+        self._loans = 0.0
+        self._deposits = 0.0
+        
         # Policy Constraints
         self.capital_adequacy_ratio = 0.08
         self.reserve_requirement = 0.045 # Cash Reserve Ratio (CRR)
         
     @property
     def loans(self):
-        """Sum of all outstanding debts in the economy."""
-        from src.engine.model import FirmAgent
-        firm_loans = sum(a.debt for a in self.model.agents if isinstance(a, FirmAgent))
-        hh_loans = sum(h.loans for h in self.model.households)
-        return firm_loans + hh_loans
+        return self._loans
 
     @property
     def deposits(self):
-        """Sum of all liquid balances in the economy."""
-        from src.engine.model import FirmAgent
-        firm_deposits = sum(a.deposits for a in self.model.agents if isinstance(a, FirmAgent))
-        hh_deposits = sum(h.deposits for h in self.model.households)
-        
-        # Handle developers and stock traders if they are initialized
-        dev_deposits = 0.0
-        if hasattr(self.model, 'land_market') and hasattr(self.model.land_market, 'developers'):
-            dev_deposits = sum(d.capital for d in self.model.land_market.developers)
-            
-        trader_deposits = 0.0
-        if hasattr(self.model, 'stock_market') and hasattr(self.model.stock_market, 'traders'):
-            trader_deposits = sum(t.cash for t in self.model.stock_market.traders)
-            
-        return firm_deposits + hh_deposits + dev_deposits + trader_deposits
+        return self._deposits
 
     @property
     def net_worth(self):
@@ -191,6 +174,10 @@ class CommercialBankAgent(Agent):
         # Create money ex-nihilo by crediting the firm's deposits and debt
         firm.deposits += amount
         firm.debt += amount
+        
+        # O(1) state update
+        self._loans += amount
+        self._deposits += amount
         return True
         
     def process_repayment(self, firm, amount):
@@ -199,6 +186,10 @@ class CommercialBankAgent(Agent):
         if actual_repayment > 0:
             firm.deposits -= actual_repayment
             firm.debt -= actual_repayment
+            
+            # O(1) state update
+            self._loans -= actual_repayment
+            self._deposits -= actual_repayment
         return actual_repayment
 
     def step(self):

@@ -12,11 +12,12 @@ class SupplyChainNetwork:
         """
         Determines the effective cost of an input factoring in spatial capacity constraints.
         Enforces SFC: Buyer transfers deposits to Seller (and transport cost to Services).
+        Uses O(1) precomputed suppliers list to avoid expensive model.agents filtering.
         """
         from src.engine.model import FirmAgent
         
-        # Find firms in the input_sec using strict isinstance filtering
-        suppliers = [f for f in self.model.agents if isinstance(f, FirmAgent) and f.sector == input_sec and f.inventory > 0]
+        # Look up precomputed suppliers list from the model
+        suppliers = getattr(self.model, 'suppliers_by_sector', {}).get(input_sec, [])
         
         if not suppliers:
             # Complete system failure for this input
@@ -25,14 +26,20 @@ class SupplyChainNetwork:
             
             # Deduct from buyer, money goes to central pool or bank (no specific supplier, so bank takes it as fee)
             firm.deposits -= exec_cost
-            if firm.deposits < 0:
-                firm.debt += abs(firm.deposits)
+            self.model.commercial_bank._deposits -= exec_cost
+            if firm.deposits < 0.0:
+                overdraft = abs(firm.deposits)
+                firm.debt += overdraft
+                self.model.commercial_bank._loans += overdraft
+                self.model.commercial_bank._deposits += overdraft
                 firm.deposits = 0.0
             return exec_cost
             
         # Sample suppliers (spatial adaptive routing)
         sample_size = min(5, len(suppliers))
-        sampled = np.random.choice(suppliers, sample_size, replace=False)
+        # Use python random.sample on indices for speed
+        sampled_indices = self.model.random.sample(range(len(suppliers)), sample_size)
+        sampled = [suppliers[idx] for idx in sampled_indices]
         
         best_supplier = None
         min_dist = np.inf
@@ -63,8 +70,11 @@ class SupplyChainNetwork:
             
             # SFC Transfer: Buyer pays Supplier and Transport provider
             firm.deposits -= exec_cost
-            if firm.deposits < 0:
-                firm.debt += abs(firm.deposits)
+            if firm.deposits < 0.0:
+                overdraft = abs(firm.deposits)
+                firm.debt += overdraft
+                self.model.commercial_bank._loans += overdraft
+                self.model.commercial_bank._deposits += overdraft
                 firm.deposits = 0.0
                 
             best_supplier.deposits += base_cost
@@ -74,9 +84,9 @@ class SupplyChainNetwork:
             # Route transport cost (markup) to Services sector
             transport_cost = exec_cost - base_cost
             if transport_cost > 0:
-                services_firms = [f for f in self.model.agents if isinstance(f, FirmAgent) and f.sector == "Services"]
+                services_firms = getattr(self.model, 'services_firms', [])
                 if services_firms:
-                    transport_firm = np.random.choice(services_firms)
+                    transport_firm = self.model.random.choice(services_firms)
                     transport_firm.deposits += transport_cost
                     transport_firm.intermediate_revenue += transport_cost
                     transport_firm.output += transport_cost
@@ -87,8 +97,12 @@ class SupplyChainNetwork:
             exec_cost = base_cost * 3.0 # Rerouting penalty
             
             firm.deposits -= exec_cost
-            if firm.deposits < 0:
-                firm.debt += abs(firm.deposits)
+            self.model.commercial_bank._deposits -= exec_cost
+            if firm.deposits < 0.0:
+                overdraft = abs(firm.deposits)
+                firm.debt += overdraft
+                self.model.commercial_bank._loans += overdraft
+                self.model.commercial_bank._deposits += overdraft
                 firm.deposits = 0.0
             return exec_cost
             

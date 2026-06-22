@@ -17,7 +17,11 @@ with open(config_path, "r") as f:
 
 def compute_gini(model):
     """Compute the Gini coefficient of firm capital distribution."""
-    agent_wealths = [a.capital for a in model.agents if isinstance(a, FirmAgent)]
+    # Use pre-filtered active_firms for speed
+    active_firms = getattr(model, 'active_firms', [])
+    if not active_firms:
+        return 0
+    agent_wealths = [a.capital for a in active_firms]
     x = sorted(agent_wealths)
     N = len(agent_wealths)
     if N == 0 or sum(x) == 0:
@@ -73,12 +77,20 @@ class FirmAgent(Agent):
         self.profit = 0.0
         self.tfp = 1.0 # Total Factor Productivity (A)
         self.bankruptcies = 0
+        self.intermediate_cost = 0.0
+        self.wages_paid = 0.0
+        self.interest_payment = 0.0
+        self.gst_payment = 0.0
+        self.depreciation_cost = 0.0
+        self.corporate_tax = 0.0
+        self.ebt = 0.0
         
         # Adaptive Expectations & Production
         self.expected_demand = 0.0
         self.inventory = 0.0
         self.learning_rate = 0.2 # eta
         self.buffer_ratio = 0.1 # nu
+        self.bankrupt = False
         
     @property
     def labor(self):
@@ -115,6 +127,7 @@ class FirmAgent(Agent):
         
         export_rev = real_exports * price_level * exchange_shock
         self.deposits += export_rev
+        self.model.commercial_bank._deposits += export_rev
         self.final_revenue += export_rev
         self.output += export_rev
         
@@ -148,21 +161,33 @@ class FirmAgent(Agent):
             
         # Bank overdraft coverage
         if self.deposits < 0.0:
-            self.debt += abs(self.deposits)
+            overdraft = abs(self.deposits)
+            self.debt += overdraft
+            self.model.commercial_bank._loans += overdraft
+            self.model.commercial_bank._deposits += overdraft
             self.deposits = 0.0
             
         # 2. Pay Interest
         self.interest_payment = self.debt * self.interest_rate
         self.deposits -= self.interest_payment
+        # O(1) state bank update for interest payment (bank deposits decrease, net worth increases)
+        self.model.commercial_bank._deposits -= self.interest_payment
         if self.deposits < 0.0:
-            self.debt += abs(self.deposits)
+            overdraft = abs(self.deposits)
+            self.debt += overdraft
+            self.model.commercial_bank._loans += overdraft
+            self.model.commercial_bank._deposits += overdraft
             self.deposits = 0.0
             
         # 3. GST Payment
         self.gst_payment = self.output * self.gst_rate
         self.deposits -= self.gst_payment
+        self.model.commercial_bank._deposits -= self.gst_payment
         if self.deposits < 0.0:
-            self.debt += abs(self.deposits)
+            overdraft = abs(self.deposits)
+            self.debt += overdraft
+            self.model.commercial_bank._loans += overdraft
+            self.model.commercial_bank._deposits += overdraft
             self.deposits = 0.0
         self.model.total_tax_collection += self.gst_payment
         
@@ -177,8 +202,12 @@ class FirmAgent(Agent):
         if self.ebt > 0:
             self.corporate_tax = self.ebt * self.corporate_tax_rate
             self.deposits -= self.corporate_tax
+            self.model.commercial_bank._deposits -= self.corporate_tax
             if self.deposits < 0.0:
-                self.debt += abs(self.deposits)
+                overdraft = abs(self.deposits)
+                self.debt += overdraft
+                self.model.commercial_bank._loans += overdraft
+                self.model.commercial_bank._deposits += overdraft
                 self.deposits = 0.0
             self.model.total_tax_collection += self.corporate_tax
             self.profit = self.ebt - self.corporate_tax
@@ -224,8 +253,12 @@ class FirmAgent(Agent):
         # Execute Investment
         self.capital += (actual_nominal_investment / price_level)
         self.deposits -= actual_nominal_investment
+        self.model.commercial_bank._deposits -= actual_nominal_investment
         if self.deposits < 0.0:
-            self.debt += abs(self.deposits)
+            overdraft = abs(self.deposits)
+            self.debt += overdraft
+            self.model.commercial_bank._loans += overdraft
+            self.model.commercial_bank._deposits += overdraft
             self.deposits = 0.0
             
         # Fire labor if target production falls below capacity
@@ -243,6 +276,15 @@ class FirmAgent(Agent):
         # Bankruptcy check (debt outgrows collateral by 2x)
         if self.debt > (self.capital * price_level * 2.0):
             self.bankruptcies += 1
+            # O(1) state bank update for loan write-off
+            self.model.commercial_bank._loans -= self.debt
+            self.model.commercial_bank._deposits -= self.deposits
+            
+            # Set bankrupt firm's financials to zero
+            self.debt = 0.0
+            self.deposits = 0.0
+            self.bankrupt = True
+            
             # Release employees
             for hh in self.employees:
                 hh.employed = False
@@ -258,9 +300,9 @@ class FirmAgent(Agent):
 def compute_state_output(model):
     """Aggregate nominal output by state."""
     state_totals = {}
-    for agent in model.agents:
-        if isinstance(agent, FirmAgent):
-            state_totals[agent.state] = state_totals.get(agent.state, 0.0) + agent.output
+    active_firms = getattr(model, 'active_firms', [])
+    for agent in active_firms:
+        state_totals[agent.state] = state_totals.get(agent.state, 0.0) + agent.output
     return state_totals
 
 class IndianEconomyModel(Model):
@@ -363,12 +405,16 @@ class IndianEconomyModel(Model):
             if not placed:
                 self.grid.place_agent(firm, (np.random.randint(100), np.random.randint(100)))
                 
-        # Map grid cells to states based on nearest firm state
+        # Map grid cells to states based on nearest firm state (using a subset of firms for speed)
         self.grid.cell_states = {}
         firms_by_pos = {}
+        firm_count = 0
         for a in self.agents:
             if isinstance(a, FirmAgent) and a.pos:
                 firms_by_pos[a.pos] = a.state
+                firm_count += 1
+                if firm_count >= 100:
+                    break
                 
         for x in range(100):
             for y in range(100):
@@ -426,27 +472,34 @@ class IndianEconomyModel(Model):
             # Update state based on final location
             hh.state = self.grid.cell_states[hh.pos]
             
+        # Initialize commercial bank deposits and loans state variables
+        self.commercial_bank._loans = sum(firm.debt for firm in self.firms)
+        self.commercial_bank._deposits = sum(firm.deposits for firm in self.firms) + sum(hh.deposits for hh in self.households)
+        
         # Balance commercial bank asset-liability reserves on day zero
         self.commercial_bank.reserves = self.commercial_bank.deposits * self.commercial_bank.reserve_requirement
         self.central_bank.reserves = self.commercial_bank.reserves
         
+        # Store active firms for day zero validation and model metrics
+        self.active_firms = [a for a in self.agents if isinstance(a, FirmAgent)]
+        
         self.datacollector = DataCollector(
             model_reporters={
-                "Total_Output": lambda m: sum([a.output for a in m.agents if isinstance(a, FirmAgent)]),
-                "Total_Profit": lambda m: sum([a.profit for a in m.agents if isinstance(a, FirmAgent)]),
-                "Total_Capital": lambda m: sum([a.capital for a in m.agents if isinstance(a, FirmAgent)]),
-                "Total_Labor": lambda m: sum([a.labor for a in m.agents if isinstance(a, FirmAgent)]),
-                "Total_Debt": lambda m: sum([a.debt for a in m.agents if isinstance(a, FirmAgent)]),
+                "Total_Output": lambda m: sum([a.output for a in m.active_firms]),
+                "Total_Profit": lambda m: sum([a.profit for a in m.active_firms]),
+                "Total_Capital": lambda m: sum([a.capital for a in m.active_firms]),
+                "Total_Labor": lambda m: sum([a.labor for a in m.active_firms]),
+                "Total_Debt": lambda m: sum([a.debt for a in m.active_firms]),
                 "Total_Tax_Revenue": lambda m: m.total_tax_collection,
                 "Price_Level": lambda m: m.price_level,
-                "Bankruptcies": lambda m: sum([a.bankruptcies for a in m.agents if isinstance(a, FirmAgent)]),
+                "Bankruptcies": lambda m: sum([a.bankruptcies for a in m.active_firms]),
                 "Gini_Coefficient": compute_gini,
-                "Agri_Output": lambda m: sum([a.output for a in m.agents if isinstance(a, FirmAgent) and a.sector == "Agriculture"]),
-                "Mfg_Output": lambda m: sum([a.output for a in m.agents if isinstance(a, FirmAgent) and a.sector == "Manufacturing"]),
-                "Svc_Output": lambda m: sum([a.output for a in m.agents if isinstance(a, FirmAgent) and a.sector == "Services"]),
-                "Agri_Profit": lambda m: sum([a.profit for a in m.agents if isinstance(a, FirmAgent) and a.sector == "Agriculture"]),
-                "Mfg_Profit": lambda m: sum([a.profit for a in m.agents if isinstance(a, FirmAgent) and a.sector == "Manufacturing"]),
-                "Svc_Profit": lambda m: sum([a.profit for a in m.agents if isinstance(a, FirmAgent) and a.sector == "Services"]),
+                "Agri_Output": lambda m: sum([a.output for a in m.active_firms if a.sector == "Agriculture"]),
+                "Mfg_Output": lambda m: sum([a.output for a in m.active_firms if a.sector == "Manufacturing"]),
+                "Svc_Output": lambda m: sum([a.output for a in m.active_firms if a.sector == "Services"]),
+                "Agri_Profit": lambda m: sum([a.profit for a in m.active_firms if a.sector == "Agriculture"]),
+                "Mfg_Profit": lambda m: sum([a.profit for a in m.active_firms if a.sector == "Manufacturing"]),
+                "Svc_Profit": lambda m: sum([a.profit for a in m.active_firms if a.sector == "Services"]),
                 "State_Output": compute_state_output,
                 "Agri_Price_Multiplier": lambda m: 1.0 / max(0.2, m.supply_multipliers.get("Agriculture", 1.0)),
                 "Mfg_Price_Multiplier": lambda m: 1.0 / max(0.2, m.supply_multipliers.get("Manufacturing", 1.0)),
@@ -481,6 +534,7 @@ class IndianEconomyModel(Model):
                 if not hh.digital_adoption:
                     cash_loss = hh.deposits * 0.5 * val
                     hh.deposits -= cash_loss
+                    self.commercial_bank._deposits -= cash_loss
 
     def step(self):
         """Advance the model by one step (one year)."""
@@ -488,18 +542,26 @@ class IndianEconomyModel(Model):
         self.total_tax_collection = 0.0
         self.aggregate_consumption = 0.0
         
-        firms = [a for a in self.agents if isinstance(a, FirmAgent)]
+        # Store active firms in self.active_firms for fast access in datacollector and step loops
+        self.active_firms = [a for a in self.agents if isinstance(a, FirmAgent)]
         
+        # Pre-group active firms by state for fast consumption O(1) lookups
+        self.firms_by_state = {}
+        for firm in self.active_firms:
+            self.firms_by_state.setdefault(firm.state, []).append(firm)
+            
         # 1. Distribute Capex back into the economy as demand
-        if self.capex_budgeted_crore > 0 and len(firms) > 0:
-            capex_per_firm = self.capex_budgeted_crore / len(firms)
-            for agent in firms:
+        if self.capex_budgeted_crore > 0 and len(self.active_firms) > 0:
+            capex_per_firm = self.capex_budgeted_crore / len(self.active_firms)
+            for agent in self.active_firms:
                 agent.deposits += capex_per_firm
                 agent.output += capex_per_firm
                 self.total_tax_collection -= capex_per_firm
+                # Inform bank of deposit changes
+                self.commercial_bank._deposits += capex_per_firm
                 
         # 2. Reset step variables for all firms
-        for firm in firms:
+        for firm in self.active_firms:
             firm.intermediate_revenue = 0.0
             firm.final_revenue = 0.0
             firm.output = 0.0
@@ -511,7 +573,7 @@ class IndianEconomyModel(Model):
                 self.apply_shock(shock)
                 
         # 3. Production Phase
-        for firm in firms:
+        for firm in self.active_firms:
             firm.produce()
             
         # 4. Consumption Phase
@@ -519,19 +581,32 @@ class IndianEconomyModel(Model):
             hh.consume()
             
         # 5. Exports Phase
-        for firm in firms:
+        for firm in self.active_firms:
             firm.export_sales()
             
         # 6. Intermediate Supply Chain Phase
-        for firm in firms:
+        # Precompute suppliers by sector with inventory > 0 and services firms for fast lookups
+        self.suppliers_by_sector = {
+            "Agriculture": [],
+            "Manufacturing": [],
+            "Services": []
+        }
+        self.services_firms = []
+        for a in self.active_firms:
+            if a.inventory > 0:
+                self.suppliers_by_sector[a.sector].append(a)
+            if a.sector == "Services":
+                self.services_firms.append(a)
+                    
+        for firm in self.active_firms:
             firm.purchase_inputs()
             
         # 7. Financials Phase (pay wages, interest, taxes, and calculate profit)
-        for firm in firms:
+        for firm in self.active_firms:
             firm.pay_financials()
             
         # 8. Investment Phase (Minsky capital expansion)
-        for firm in firms:
+        for firm in self.active_firms:
             firm.invest_and_finance()
             
         # 9. Market / Labor / Space steps
@@ -545,12 +620,15 @@ class IndianEconomyModel(Model):
         # Step bank and central bank
         self.commercial_bank.step()
         self.central_bank.step()
+        
+        # Remove bankrupt firms from active_firms list before output calculations and data collection
+        self.active_firms = [f for f in self.active_firms if not getattr(f, 'bankrupt', False)]
             
         # Calculate sector supply for the next tick's intermediate consumption
         current_supply = {
-            "Agriculture": sum([a.output for a in self.agents if isinstance(a, FirmAgent) and a.sector == "Agriculture"]),
-            "Manufacturing": sum([a.output for a in self.agents if isinstance(a, FirmAgent) and a.sector == "Manufacturing"]),
-            "Services": sum([a.output for a in self.agents if isinstance(a, FirmAgent) and a.sector == "Services"])
+            "Agriculture": sum([a.output for a in self.active_firms if a.sector == "Agriculture"]),
+            "Manufacturing": sum([a.output for a in self.active_firms if a.sector == "Manufacturing"]),
+            "Services": sum([a.output for a in self.active_firms if a.sector == "Services"])
         }
         
         if self.baseline_supply is None:
