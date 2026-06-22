@@ -105,6 +105,7 @@ class FirmAgent(Agent):
         self.learning_rate = 0.2 # eta
         self.buffer_ratio = 0.1 # nu
         self.bankrupt = False
+        self.carbon_tax_payment = 0.0
         
     @property
     def labor(self):
@@ -113,6 +114,32 @@ class FirmAgent(Agent):
     @property
     def net_worth(self):
         return self.capital + self.deposits - self.debt
+        
+    @property
+    def emission_intensity(self):
+        if not self.pos:
+            return 0.0
+        sec_intensity = {"Agriculture": 0.8, "Manufacturing": 2.5, "Services": 0.3}
+        grid_int = self.model.grid.grid_emission_intensity[self.pos[0]][self.pos[1]]
+        return grid_int * sec_intensity.get(self.sector, 1.0)
+        
+    @property
+    def cbam_exposure(self):
+        if not self.pos:
+            return 0.0
+        return self.model.grid.cbam_exposure[self.pos[0]][self.pos[1]]
+        
+    @property
+    def climate_vulnerability(self):
+        if not self.pos:
+            return 0.0
+        return self.model.grid.climate_vulnerability_score[self.pos[0]][self.pos[1]]
+        
+    @property
+    def state_gsdp_per_capita(self):
+        if not self.pos:
+            return 0.0
+        return self.model.grid.state_gsdp_per_capita[self.pos[0]][self.pos[1]]
         
     def produce(self):
         """Phase 1: Determine target demand and produce goods."""
@@ -136,10 +163,24 @@ class FirmAgent(Agent):
         
         # Export demand based on propensity and exchange rate
         export_demand = self.expected_demand * self.export_propensity * exchange_shock
+        
+        # Apply CBAM shock if active
+        cbam_tariff = getattr(self.model, 'cbam_tariff', 0.0)
+        if cbam_tariff > 0.0:
+            cbam_cost_factor = cbam_tariff * self.emission_intensity * self.cbam_exposure
+            cbam_cost_factor = np.clip(cbam_cost_factor, 0.0, 0.8)
+            export_demand *= (1.0 - cbam_cost_factor)
+            
         real_exports = min(self.inventory, export_demand)
         self.inventory = max(0.0, self.inventory - real_exports)
         
         export_rev = real_exports * price_level * exchange_shock
+        if cbam_tariff > 0.0:
+            # EU collects the tariff, resulting in leakage from export revenue
+            cbam_cost_factor = cbam_tariff * self.emission_intensity * self.cbam_exposure
+            cbam_cost_factor = np.clip(cbam_cost_factor, 0.0, 0.8)
+            export_rev *= (1.0 - cbam_cost_factor)
+            
         self.deposits += export_rev
         self.model.commercial_bank._deposits += export_rev
         self.final_revenue += export_rev
@@ -206,12 +247,29 @@ class FirmAgent(Agent):
             self.deposits = 0.0
         self.model.total_tax_collection += self.gst_payment
         
+        # 3b. Carbon Tax Payment
+        carbon_price = getattr(self.model, 'carbon_price', 0.0)
+        self.carbon_tax_payment = 0.0
+        if carbon_price > 0.0:
+            emissions = self.emission_intensity * self.output
+            self.carbon_tax_payment = emissions * carbon_price
+            self.deposits -= self.carbon_tax_payment
+            self.model.commercial_bank._deposits -= self.carbon_tax_payment
+            self.model.commercial_bank.reserves -= self.carbon_tax_payment
+            if self.deposits < 0.0:
+                overdraft = abs(self.deposits)
+                self.debt += overdraft
+                self.model.commercial_bank._loans += overdraft
+                self.model.commercial_bank._deposits += overdraft
+                self.deposits = 0.0
+            self.model.total_tax_collection += self.carbon_tax_payment
+            
         # 4. Depreciation (non-cash charge, reduces capital value)
         self.depreciation_cost = self.capital * self.depreciation_rate * price_level
         self.capital = max(0.01, self.capital - (self.depreciation_cost / price_level))
         
         # 5. Earnings Before Tax (EBT)
-        self.ebt = self.output - self.intermediate_cost - self.wages_paid - self.depreciation_cost - self.interest_payment - self.gst_payment
+        self.ebt = self.output - self.intermediate_cost - self.wages_paid - self.depreciation_cost - self.interest_payment - self.gst_payment - self.carbon_tax_payment
         
         # 6. Corporate Tax & Net Profit
         if self.ebt > 0:
@@ -322,6 +380,22 @@ def compute_state_output(model):
         state_totals[agent.state] = state_totals.get(agent.state, 0.0) + agent.output
     return state_totals
 
+def compute_state_emissions(model):
+    """Aggregate emissions by state."""
+    state_totals = {}
+    active_firms = getattr(model, 'active_firms', [])
+    for agent in active_firms:
+        state_totals[agent.state] = state_totals.get(agent.state, 0.0) + (agent.emission_intensity * agent.output)
+    return state_totals
+
+def compute_state_carbon_tax(model):
+    """Aggregate carbon tax by state."""
+    state_totals = {}
+    active_firms = getattr(model, 'active_firms', [])
+    for agent in active_firms:
+        state_totals[agent.state] = state_totals.get(agent.state, 0.0) + getattr(agent, 'carbon_tax_payment', 0.0)
+    return state_totals
+
 class IndianEconomyModel(Model):
     """The macro-economy model containing all firms and government."""
     def __init__(self, data_path=None, policy_shocks=None, seed=None):
@@ -348,6 +422,8 @@ class IndianEconomyModel(Model):
         self.inflation_rate = config['monetary_policy']['target_inflation_rate']
         self.total_tax_collection = 0.0
         self.exchange_rate_shock_val = 0.0
+        self.carbon_price = 0.0
+        self.cbam_tariff = 0.0
         
         # Synchronized repo rate via macro data loader
         from src.data_pipeline.data_loader import DataLoader
@@ -378,8 +454,14 @@ class IndianEconomyModel(Model):
         from src.engine.financial_markets import LimitOrderBook
         from src.engine.supply_chain import SupplyChainNetwork
         
-        # Initialize Spatial Grid and Land Market
-        self.grid = UrbanSpace(100, 100, torus=False)
+        # Initialize Spatial Grid and Land Market with dynamic bounds
+        cell_size = config['grid'].get('cell_size_deg', 0.25)
+        lat_min, lat_max = config['grid']['lat_bounds']
+        lon_min, lon_max = config['grid']['lon_bounds']
+        width = int((lon_max - lon_min) / cell_size)
+        height = int((lat_max - lat_min) / cell_size)
+        
+        self.grid = UrbanSpace(width, height, torus=False)
         self.grid.initialize_ntl_proxy()
         self.land_market = LandMarket(self)
         self.migration_engine = MigrationEngine(self)
@@ -396,7 +478,11 @@ class IndianEconomyModel(Model):
         # Create agents (firms)
         self.firms = []
         for idx, row in synthetic_firms_df.iterrows():
-            debt = row.get("Debt", 0.0)
+            # Cap debt at 1.5x capital to prevent immediate day-zero bankruptcy
+            # The bankruptcy threshold is 2.0x capital.
+            raw_debt = row.get("Debt", 0.0)
+            max_allowed_debt = row['Capital'] * 1.5
+            debt = min(raw_debt, max_allowed_debt)
             firm = FirmAgent(
                 model=self,
                 unique_id=row['CIN'],
@@ -411,35 +497,21 @@ class IndianEconomyModel(Model):
             )
             self.firms.append(firm)
             
-            # Place firm on Commercial grid cells if available, else random
-            placed = False
-            for _ in range(10):
-                x, y = np.random.randint(100), np.random.randint(100)
-                if self.grid.zoning[x][y] == 2: # Commercial
-                    self.grid.place_agent(firm, (x, y))
-                    placed = True
-                    break
-            if not placed:
-                self.grid.place_agent(firm, (np.random.randint(100), np.random.randint(100)))
-                
-        # Map grid cells to states based on nearest firm state (using a subset of firms for speed)
-        self.grid.cell_states = {}
-        firms_by_pos = {}
-        firm_count = 0
-        for a in self.agents:
-            if isinstance(a, FirmAgent) and a.pos:
-                firms_by_pos[a.pos] = a.state
-                firm_count += 1
-                if firm_count >= 100:
-                    break
-                
-        for x in range(100):
-            for y in range(100):
-                if firms_by_pos:
-                    nearest = min(firms_by_pos.keys(), key=lambda p: (p[0]-x)**2 + (p[1]-y)**2)
-                    self.grid.cell_states[(x, y)] = firms_by_pos[nearest]
+            # Place firm in its registered state
+            comm_cells = self.grid.cells_by_state_and_zoning.get((firm.state, 2), [])
+            if comm_cells:
+                pos = self.random.choice(comm_cells)
+            else:
+                state_cells = self.grid.cells_by_state.get(firm.state, [])
+                if state_cells:
+                    pos = self.random.choice(state_cells)
                 else:
-                    self.grid.cell_states[(x, y)] = "Delhi"
+                    mp_comm = self.grid.cells_by_state_and_zoning.get(("Madhya Pradesh", 2), [])
+                    if mp_comm:
+                        pos = self.random.choice(mp_comm)
+                    else:
+                        pos = (self.random.randint(0, self.grid.width - 1), self.random.randint(0, self.grid.height - 1))
+            self.grid.place_agent(firm, pos)
             
         # Create households and match to initial firm labor requirements
         firm_target_labor = {}
@@ -477,17 +549,22 @@ class IndianEconomyModel(Model):
             self.households.append(hh)
             hh_idx += 1
             
-        # Place households on Residential cells
+        # Place households on Residential cells in their state
         for hh in self.households:
-            placed = False
-            for _ in range(10):
-                x, y = np.random.randint(100), np.random.randint(100)
-                if self.grid.zoning[x][y] == 1: # Residential
-                    self.grid.place_agent(hh, (x, y))
-                    placed = True
-                    break
-            if not placed:
-                self.grid.place_agent(hh, (np.random.randint(100), np.random.randint(100)))
+            res_cells = self.grid.cells_by_state_and_zoning.get((hh.state, 1), [])
+            if res_cells:
+                pos = self.random.choice(res_cells)
+            else:
+                state_cells = self.grid.cells_by_state.get(hh.state, [])
+                if state_cells:
+                    pos = self.random.choice(state_cells)
+                else:
+                    mp_res = self.grid.cells_by_state_and_zoning.get(("Madhya Pradesh", 1), [])
+                    if mp_res:
+                        pos = self.random.choice(mp_res)
+                    else:
+                        pos = (self.random.randint(0, self.grid.width - 1), self.random.randint(0, self.grid.height - 1))
+            self.grid.place_agent(hh, pos)
             # Update state based on final location
             hh.state = self.grid.cell_states[hh.pos]
             
@@ -522,6 +599,10 @@ class IndianEconomyModel(Model):
                 "Mfg_Profit": lambda m: sum([a.profit for a in m.active_firms if a.sector == "Manufacturing"]),
                 "Svc_Profit": lambda m: sum([a.profit for a in m.active_firms if a.sector == "Services"]),
                 "State_Output": compute_state_output,
+                "Total_Emissions": lambda m: sum([a.emission_intensity * a.output for a in m.active_firms]),
+                "Carbon_Tax_Revenue": lambda m: sum([getattr(a, 'carbon_tax_payment', 0.0) for a in m.active_firms]),
+                "State_Emissions": compute_state_emissions,
+                "State_Carbon_Tax": compute_state_carbon_tax,
                 "Agri_Price_Multiplier": lambda m: 1.0 / max(0.2, m.supply_multipliers.get("Agriculture", 1.0)),
                 "Mfg_Price_Multiplier": lambda m: 1.0 / max(0.2, m.supply_multipliers.get("Manufacturing", 1.0)),
                 "Svc_Price_Multiplier": lambda m: 1.0 / max(0.2, m.supply_multipliers.get("Services", 1.0))
@@ -557,6 +638,12 @@ class IndianEconomyModel(Model):
                     hh.deposits -= cash_loss
                     self.commercial_bank._deposits -= cash_loss
                     self.commercial_bank.reserves -= cash_loss
+                    
+        elif shock_type == 'carbon_price_shock':
+            self.carbon_price = max(0.0, self.carbon_price + val)
+            
+        elif shock_type == 'cbam_shock':
+            self.cbam_tariff = max(0.0, self.cbam_tariff + val)
 
     def step(self):
         """Advance the model by one step (one year)."""

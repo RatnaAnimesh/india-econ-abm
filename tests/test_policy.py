@@ -48,3 +48,31 @@ def test_policy_analyzer():
     finally:
         # Restore configuration
         src.engine.policy.config['run']['n_seeds'] = old_n_seeds
+
+def test_carbon_pricing_and_cbam_shocks():
+    """Verify that carbon price and CBAM shocks work as expected."""
+    data_path = os.path.join(ROOT_DIR, "data", "processed", "synthetic_firms.csv")
+    
+    # Run with a carbon price shock of 10.0 and CBAM shock of 0.20
+    shocks = [
+        {'type': 'carbon_price_shock', 'value': 10.0, 'tick': 0},
+        {'type': 'cbam_shock', 'value': 0.20, 'tick': 0}
+    ]
+    model = IndianEconomyModel(data_path=data_path, policy_shocks=shocks, seed=42)
+    
+    # Verify values at initialization (before step)
+    assert model.carbon_price == 0.0
+    assert model.cbam_tariff == 0.0
+    
+    # Step once: shock is applied
+    model.step()
+    assert model.carbon_price == 10.0
+    assert model.cbam_tariff == 0.20
+    
+    # Check that emissions and tax revenue are tracked
+    df = model.datacollector.get_model_vars_dataframe()
+    emissions = df.iloc[-1]['Total_Emissions']
+    tax_rev = df.iloc[-1]['Carbon_Tax_Revenue']
+    assert emissions >= 0.0
+    assert tax_rev >= 0.0
+

@@ -36,15 +36,12 @@ class MigrationEngine:
         if not res_zones:
             return
             
-        # Precompute local average wages for all residential cells to avoid slow nested spatial queries
-        local_wages = {}
-        for dest in res_zones:
-            neighbors = grid.get_neighborhood(dest, moore=True, include_center=True, radius=10)
-            local_firms = [a for a in grid.get_cell_list_contents(neighbors) if isinstance(a, FirmAgent)]
-            if local_firms:
-                local_wages[dest] = np.mean([f.wage_rate * self.model.price_level for f in local_firms])
-            else:
-                local_wages[dest] = None
+        # Precompute average wages by state for fast O(1) lookups
+        avg_wage_by_state = {}
+        for st, firms in getattr(self.model, 'firms_by_state', {}).items():
+            active_firms_in_state = [f for f in firms if not f.bankrupt]
+            if active_firms_in_state:
+                avg_wage_by_state[st] = np.mean([f.wage_rate for f in active_firms_in_state]) * self.model.price_level
                 
         for hh in rural_households:
             # Only consider migration if unemployed or poor
@@ -60,10 +57,9 @@ class MigrationEngine:
             for idx in dest_sample:
                 dest = res_zones[idx]
                 
-                # Fetch precomputed local wage or fallback
-                expected_wage = local_wages[dest]
-                if expected_wage is None:
-                    expected_wage = hh.reservation_wage * 1.2
+                # Fetch average wage in destination cell's state or fallback
+                dest_state = grid.cell_states.get(dest)
+                expected_wage = avg_wage_by_state.get(dest_state, hh.reservation_wage * 1.2)
                 
                 # Proxy for cost of living (land price at dest)
                 cost_of_living = grid.land_prices[dest[0]][dest[1]] * 0.01

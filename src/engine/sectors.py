@@ -77,9 +77,8 @@ class HouseholdAgent(Agent):
         # Look up pre-grouped firms by state from the model
         state_firms = getattr(self.model, 'firms_by_state', {}).get(self.state, [])
         if not state_firms:
-            # Fallback to all firms
-            from src.engine.model import FirmAgent
-            state_firms = [a for a in self.model.agents if isinstance(a, FirmAgent)]
+            # Fallback to all active firms
+            state_firms = getattr(self.model, 'active_firms', [])
             
         if not state_firms:
             return # No firms to buy from

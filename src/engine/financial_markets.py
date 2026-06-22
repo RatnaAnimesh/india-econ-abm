@@ -65,9 +65,8 @@ class LimitOrderBook:
         self.traders = [BehavioralTrader(model, f"TRADER_{i}", np.random.choice(strategies)) for i in range(20)]
         
     def step(self):
-        from src.engine.model import FirmAgent
         # Calculate fundamental value proxy based on total economy firm profit
-        total_profit = sum([max(0, a.profit) for a in self.model.agents if isinstance(a, FirmAgent)])
+        total_profit = sum([max(0, a.profit) for a in getattr(self.model, 'active_firms', [])])
         fundamental_value = 100.0 + (total_profit / 10000.0) # Arbitrary scaling
         
         market_trend = self.price_history[-1] - self.price_history[-2] if len(self.price_history) > 1 else 0

@@ -35,11 +35,12 @@ def run_simulation(ticks=None, policy_shocks=None, save_path=None, seed=None):
     results_df = model.datacollector.get_model_vars_dataframe()
     results_df.index.name = "Tick"
     
-    # Flatten the State_Output dictionary into separate columns
-    if 'State_Output' in results_df.columns:
-        state_df = results_df['State_Output'].apply(pd.Series)
-        state_df = state_df.add_prefix('State_')
-        results_df = pd.concat([results_df.drop('State_Output', axis=1), state_df], axis=1)
+    # Flatten the State_Output, State_Emissions, and State_Carbon_Tax dictionaries into separate columns
+    for dict_col in ['State_Output', 'State_Emissions', 'State_Carbon_Tax']:
+        if dict_col in results_df.columns:
+            state_df = results_df[dict_col].apply(pd.Series)
+            state_df = state_df.add_prefix(f'{dict_col}_')
+            results_df = pd.concat([results_df.drop(dict_col, axis=1), state_df], axis=1)
         
     # Scale aggregated volume metrics by representing the full Indian economy
     # total active firms in MoSPI/MCA data approx 1.5 million.
@@ -48,7 +49,7 @@ def run_simulation(ticks=None, policy_shocks=None, save_path=None, seed=None):
     
     non_volume_metrics = ['Price_Level', 'Gini_Coefficient', 'Agri_Price_Multiplier', 'Mfg_Price_Multiplier', 'Svc_Price_Multiplier']
     for col in results_df.columns:
-        if col not in non_volume_metrics and not col.startswith('State_'):
+        if col not in non_volume_metrics:
             results_df[col] = results_df[col] * scale_factor
             
     # Save results
@@ -65,6 +66,8 @@ if __name__ == "__main__":
     parser.add_argument("--repo_shock", type=float, default=0.0, help="Additive shock to RBI Repo Rate (e.g. 0.02 for +2%)")
     parser.add_argument("--gst_shock", type=float, default=0.0, help="Additive shock to GST Rates (e.g. -0.05 for -5%)")
     parser.add_argument("--exchange_shock", type=float, default=0.0, help="Additive shock to Exchange Rate (e.g. 0.1 for 10% depreciation)")
+    parser.add_argument("--carbon_price_shock", type=float, default=0.0, help="Additive shock to Carbon Price (e.g. 10.0 for carbon price shock)")
+    parser.add_argument("--cbam_shock", type=float, default=0.0, help="Additive shock to CBAM export tariff rate (e.g. 0.20 for 20% tariff)")
     args = parser.parse_args()
     
     # Pack shocks as a policy_shocks list
@@ -75,5 +78,9 @@ if __name__ == "__main__":
         shocks.append({'type': 'gst_shock', 'value': args.gst_shock, 'tick': 0})
     if args.exchange_shock != 0.0:
         shocks.append({'type': 'exchange_rate_shock', 'value': args.exchange_shock, 'tick': 0})
+    if args.carbon_price_shock != 0.0:
+        shocks.append({'type': 'carbon_price_shock', 'value': args.carbon_price_shock, 'tick': 0})
+    if args.cbam_shock != 0.0:
+        shocks.append({'type': 'cbam_shock', 'value': args.cbam_shock, 'tick': 0})
         
     run_simulation(ticks=args.ticks, policy_shocks=shocks)

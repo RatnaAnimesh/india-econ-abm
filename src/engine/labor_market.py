@@ -24,22 +24,21 @@ class LaborMarket:
         
         # Collect vacancies from firms
         searching_firms = []
-        for firm in self.model.agents:
-            if isinstance(firm, FirmAgent):
-                target_prod = firm.expected_demand * (1.0 + firm.buffer_ratio) - firm.inventory
-                max_capacity = firm.tfp * (firm.capital ** firm.cap_share) * (firm.labor ** firm.lab_share)
-                
-                if target_prod > max_capacity:
-                    # Estimate needed labor (inverted Cobb-Douglas approximation)
-                    needed_ratio = target_prod / max(0.01, max_capacity)
-                    desired_labor = int(firm.labor * needed_ratio)
-                    vacancies = desired_labor - firm.labor
-                    if vacancies > 0:
-                        searching_firms.append({
-                            'firm': firm,
-                            'vacancies': vacancies,
-                            'wage_offer': firm.wage_rate * self.model.price_level
-                        })
+        for firm in self.model.active_firms:
+            target_prod = firm.expected_demand * (1.0 + firm.buffer_ratio) - firm.inventory
+            max_capacity = firm.tfp * (firm.capital ** firm.cap_share) * (firm.labor ** firm.lab_share)
+            
+            if target_prod > max_capacity:
+                # Estimate needed labor (inverted Cobb-Douglas approximation)
+                needed_ratio = target_prod / max(0.01, max_capacity)
+                desired_labor = int(firm.labor * needed_ratio)
+                vacancies = desired_labor - firm.labor
+                if vacancies > 0:
+                    searching_firms.append({
+                        'firm': firm,
+                        'vacancies': vacancies,
+                        'wage_offer': firm.wage_rate * self.model.price_level
+                    })
                         
         unemployed_households = [hh for hh in self.model.households if not hh.employed]
         

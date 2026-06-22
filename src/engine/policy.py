@@ -12,7 +12,7 @@ with open(config_path, "r") as f:
 
 class PolicyIntervention:
     """Represents a specific macroeconomic policy shock to inject into the economy."""
-    def __init__(self, name, description, shocks=None, repo_rate_shock=0.0, gst_shock=0.0, exchange_rate_shock=0.0, demonetisation_shock=0.0, shock_tick=0):
+    def __init__(self, name, description, shocks=None, repo_rate_shock=0.0, gst_shock=0.0, exchange_rate_shock=0.0, demonetisation_shock=0.0, carbon_price_shock=0.0, cbam_shock=0.0, shock_tick=0):
         self.name = name
         self.description = description
         if shocks is not None:
@@ -27,6 +27,10 @@ class PolicyIntervention:
                 self.shocks.append({'type': 'exchange_rate_shock', 'value': exchange_rate_shock, 'tick': shock_tick})
             if demonetisation_shock != 0.0:
                 self.shocks.append({'type': 'demonetisation_shock', 'value': demonetisation_shock, 'tick': shock_tick})
+            if carbon_price_shock != 0.0:
+                self.shocks.append({'type': 'carbon_price_shock', 'value': carbon_price_shock, 'tick': shock_tick})
+            if cbam_shock != 0.0:
+                self.shocks.append({'type': 'cbam_shock', 'value': cbam_shock, 'tick': shock_tick})
 
 class PolicyAnalyzer:
     """Runs counterfactuals and evaluates the differential impact of policy interventions."""
