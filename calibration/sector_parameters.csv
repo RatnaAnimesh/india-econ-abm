@@ -1,0 +1,4 @@
+nic_section,alpha_capital_share,beta_labor_share,productivity_A,wage_elasticity,demand_elasticity,income_elasticity,export_propensity,import_dependence,source_confidence
+Agriculture,0.435,0.565,1.0,0.5,0.8,0.4,0.1,0.05,high
+Manufacturing,0.635,0.365,1.0,0.7,1.2,1.1,0.3,0.15,high
+Services,0.450,0.550,1.0,0.4,1.0,1.2,0.2,0.10,high

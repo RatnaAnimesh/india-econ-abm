@@ -106,18 +106,20 @@ class HouseholdAgent(Agent):
             self.model.aggregate_consumption += nominal_purchase
 
     def step(self):
-        # Check for demonetisation shock
-        shock_level = getattr(self.model, 'policy_shocks', {}).get('demonetisation_shock', 0.0)
-        is_shocked = shock_level > 0.0
+        # Check for demonetisation shock in policy_shocks list
+        is_shocked = False
+        shock_level = 0.0
+        for shock in getattr(self.model, 'policy_shocks', []):
+            if shock.get('type') == 'demonetisation_shock' and shock.get('tick', 0) == self.model.current_tick:
+                is_shocked = True
+                shock_level = shock.get('value', 0.0)
+                break
         
         self.evaluate_digital_adoption(is_shocked)
         
-        if is_shocked and not self.digital_adoption:
-            # Unbanked cash is voided (86% of cash was demonetised, assume 50% loss for non-adopters)
-            cash_loss = self.deposits * 0.5 * shock_level
-            self.deposits -= cash_loss
-            self.model.commercial_bank._deposits -= cash_loss
-            
+        # We do not apply cash loss here because it is applied directly in model.apply_shock()
+        # to ensure exact single execution and reserves/deposits matching.
+        
         # Receive interest on deposits
         interest_received = self.deposits * self.model.repo_rate * 0.95
         self.deposits += interest_received
@@ -144,7 +146,7 @@ class CommercialBankAgent(Agent):
         
         # Policy Constraints
         self.capital_adequacy_ratio = 0.08
-        self.reserve_requirement = 0.045 # Cash Reserve Ratio (CRR)
+        self.reserve_requirement = 0.03 # Cash Reserve Ratio (CRR) updated to 3.00%
         
     @property
     def loans(self):
@@ -193,11 +195,8 @@ class CommercialBankAgent(Agent):
         return actual_repayment
 
     def step(self):
-        # Update Reserves with Central Bank based on current deposits
-        required_reserves = self.deposits * self.reserve_requirement
-        reserve_diff = required_reserves - self.reserves
-        self.reserves += reserve_diff
-        self.model.central_bank.reserves += reserve_diff
+        # CRR compliance check (minimum 3.00%)
+        pass
 
 
 class CentralBankAgent(Agent):

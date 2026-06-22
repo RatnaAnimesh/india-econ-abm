@@ -11,7 +11,9 @@ config_path = os.path.join(ROOT_DIR, "config", "config.yaml")
 with open(config_path, "r") as f:
     config = yaml.safe_load(f)
 
-def run_simulation(ticks=10, policy_shocks=None, save_path=None, seed=None):
+def run_simulation(ticks=None, policy_shocks=None, save_path=None, seed=None):
+    if ticks is None:
+        ticks = config['run'].get('n_steps', 12)
     print(f"Initializing Indian Economy ABM for {ticks} ticks (years)...")
     if policy_shocks:
         print(f"Applying Policy Shocks: {policy_shocks}")
@@ -59,7 +61,7 @@ def run_simulation(ticks=10, policy_shocks=None, save_path=None, seed=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the Indian Economy ABM.")
-    parser.add_argument("--ticks", type=int, default=10, help="Number of ticks (years)")
+    parser.add_argument("--ticks", type=int, default=None, help="Number of ticks (years)")
     parser.add_argument("--repo_shock", type=float, default=0.0, help="Additive shock to RBI Repo Rate (e.g. 0.02 for +2%)")
     parser.add_argument("--gst_shock", type=float, default=0.0, help="Additive shock to GST Rates (e.g. -0.05 for -5%)")
     parser.add_argument("--exchange_shock", type=float, default=0.0, help="Additive shock to Exchange Rate (e.g. 0.1 for 10% depreciation)")

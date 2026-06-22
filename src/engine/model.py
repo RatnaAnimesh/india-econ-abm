@@ -52,12 +52,26 @@ class FirmAgent(Agent):
         self.investment_rate = config['agent_logic']['investment_rate']
         self.profit_labor_growth_rate = config['agent_logic']['profit_labor_growth_rate']
         self.loss_labor_shrink_rate = config['agent_logic']['loss_labor_shrink_rate']
-        self.tfp_growth_rate = config['agent_logic']['tfp_growth_rates'][self.sector] / 100.0
+        # TFP growth rate with firm-level variation
+        baseline_tfp_growth = config['agent_logic']['tfp_growth_rates'][self.sector] / 100.0
+        self.tfp_growth_rate = max(0.0, baseline_tfp_growth + np.random.normal(0.0, 0.002))
         
         # Fiscal Policy
         self.corporate_tax_rate = config['fiscal_policy']['corporate_tax_rate']
-        base_gst = config['fiscal_policy']['gst_rates'][self.sector]
-        self.gst_rate = base_gst
+        try:
+            division = int(self.cin[1:3])
+        except (ValueError, TypeError, IndexError):
+            division = 0
+            
+        gst_tiers = config['fiscal_policy']['gst_rates']
+        if division in [1, 2, 3, 84, 85, 86, 87, 88]:
+            self.gst_rate = gst_tiers.get('exempt', 0.00)
+        elif division in [10, 11, 13, 14, 15, 55, 56]:
+            self.gst_rate = gst_tiers.get('basic', 0.05)
+        elif division in [12, 29, 30]:
+            self.gst_rate = gst_tiers.get('demerit', 0.40)
+        else:
+            self.gst_rate = gst_tiers.get('standard', 0.18)
         
         # Fetch interest rate based on global repo rate
         self.interest_rate = max(0.0, self.model.repo_rate + config['monetary_policy']['corporate_spread'])
@@ -183,6 +197,7 @@ class FirmAgent(Agent):
         self.gst_payment = self.output * self.gst_rate
         self.deposits -= self.gst_payment
         self.model.commercial_bank._deposits -= self.gst_payment
+        self.model.commercial_bank.reserves -= self.gst_payment
         if self.deposits < 0.0:
             overdraft = abs(self.deposits)
             self.debt += overdraft
@@ -203,6 +218,7 @@ class FirmAgent(Agent):
             self.corporate_tax = self.ebt * self.corporate_tax_rate
             self.deposits -= self.corporate_tax
             self.model.commercial_bank._deposits -= self.corporate_tax
+            self.model.commercial_bank.reserves -= self.corporate_tax
             if self.deposits < 0.0:
                 overdraft = abs(self.deposits)
                 self.debt += overdraft
@@ -254,6 +270,7 @@ class FirmAgent(Agent):
         self.capital += (actual_nominal_investment / price_level)
         self.deposits -= actual_nominal_investment
         self.model.commercial_bank._deposits -= actual_nominal_investment
+        self.model.commercial_bank.reserves -= actual_nominal_investment
         if self.deposits < 0.0:
             overdraft = abs(self.deposits)
             self.debt += overdraft
@@ -425,13 +442,15 @@ class IndianEconomyModel(Model):
                     self.grid.cell_states[(x, y)] = "Delhi"
             
         # Create households and match to initial firm labor requirements
-        num_households = self.num_agents * 10
-        self.households = []
-        
         firm_target_labor = {}
         for idx, row in synthetic_firms_df.iterrows():
             req_labor = max(1, int(np.round(row['Labor'])))
             firm_target_labor[row['CIN']] = req_labor
+            
+        # Calibrate initial unemployment to the PLFS target of ~4.9% (total labor supply is ~1.052x target labor)
+        sum_target_labor = sum(firm_target_labor.values())
+        num_households = int(sum_target_labor * 1.052)
+        self.households = []
             
         hh_idx = 0
         for firm in self.firms:
@@ -476,8 +495,10 @@ class IndianEconomyModel(Model):
         self.commercial_bank._loans = sum(firm.debt for firm in self.firms)
         self.commercial_bank._deposits = sum(firm.deposits for firm in self.firms) + sum(hh.deposits for hh in self.households)
         
-        # Balance commercial bank asset-liability reserves on day zero
-        self.commercial_bank.reserves = self.commercial_bank.deposits * self.commercial_bank.reserve_requirement
+        # Enforce commercial bank solvency and double-entry consistency on day zero.
+        # Bank starts with a robust capital buffer (equity). Reserves are set to exactly match assets/liabilities.
+        initial_bank_equity = 2000000.0
+        self.commercial_bank.reserves = self.commercial_bank.deposits + initial_bank_equity - self.commercial_bank.loans
         self.central_bank.reserves = self.commercial_bank.reserves
         
         # Store active firms for day zero validation and model metrics
@@ -535,6 +556,7 @@ class IndianEconomyModel(Model):
                     cash_loss = hh.deposits * 0.5 * val
                     hh.deposits -= cash_loss
                     self.commercial_bank._deposits -= cash_loss
+                    self.commercial_bank.reserves -= cash_loss
 
     def step(self):
         """Advance the model by one step (one year)."""
@@ -550,22 +572,25 @@ class IndianEconomyModel(Model):
         for firm in self.active_firms:
             self.firms_by_state.setdefault(firm.state, []).append(firm)
             
-        # 1. Distribute Capex back into the economy as demand
-        if self.capex_budgeted_crore > 0 and len(self.active_firms) > 0:
-            capex_per_firm = self.capex_budgeted_crore / len(self.active_firms)
-            for agent in self.active_firms:
-                agent.deposits += capex_per_firm
-                agent.output += capex_per_firm
-                self.total_tax_collection -= capex_per_firm
-                # Inform bank of deposit changes
-                self.commercial_bank._deposits += capex_per_firm
-                
         # 2. Reset step variables for all firms
         for firm in self.active_firms:
             firm.intermediate_revenue = 0.0
             firm.final_revenue = 0.0
             firm.output = 0.0
             firm.profit = 0.0
+            
+        # 1. Distribute Capex back into the economy as demand
+        if self.capex_budgeted_crore > 0 and len(self.active_firms) > 0:
+            capex_per_firm = self.capex_budgeted_crore / len(self.active_firms)
+            for agent in self.active_firms:
+                agent.deposits += capex_per_firm
+                agent.output += capex_per_firm
+                # Route capex to final_revenue as government consumption demand
+                agent.final_revenue += capex_per_firm
+                self.total_tax_collection -= capex_per_firm
+                # Inform bank of deposit and reserves changes
+                self.commercial_bank._deposits += capex_per_firm
+                self.commercial_bank.reserves += capex_per_firm
             
         # Apply policy shocks scheduled for the current tick
         for shock in self.policy_shocks:
@@ -605,6 +630,9 @@ class IndianEconomyModel(Model):
         for firm in self.active_firms:
             firm.pay_financials()
             
+        for hh in self.households:
+            hh.step()
+            
         # 8. Investment Phase (Minsky capital expansion)
         for firm in self.active_firms:
             firm.invest_and_finance()
@@ -619,6 +647,7 @@ class IndianEconomyModel(Model):
         
         # Step bank and central bank
         self.commercial_bank.step()
+        self.central_bank.reserves = self.commercial_bank.reserves
         self.central_bank.step()
         
         # Remove bankrupt firms from active_firms list before output calculations and data collection

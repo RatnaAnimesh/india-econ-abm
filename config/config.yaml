@@ -39,9 +39,10 @@ data_sources:
 fiscal_policy:
   corporate_tax_rate: 0.25
   gst_rates:
-    Agriculture: 0.0
-    Manufacturing: 0.18
-    Services: 0.18
+    exempt: 0.00
+    basic: 0.05
+    standard: 0.18
+    demerit: 0.40
 government:
   capex_budgeted_crore: 1111000.0
   capex_effective_crore: 1000000.0

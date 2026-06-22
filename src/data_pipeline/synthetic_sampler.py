@@ -163,8 +163,10 @@ class SyntheticFirmGenerator:
         firms['Labor'] = firms['Labor'].clip(lower=1)
         
         # Add Debt based on empirical average Debt-to-Equity (Capital) ratio of ~0.8
-        # We add some random lognormal noise so not every firm has exactly 0.8 leverage
-        leverage_ratios = np.random.lognormal(mean=np.log(0.8), sigma=0.5, size=self.num_agents)
+        # We add some random lognormal noise so not every firm has exactly 0.8 leverage.
+        # To prevent firms from starting bankrupt, we cap the leverage ratios at 1.8.
+        leverage_ratios = np.random.lognormal(mean=np.log(0.8), sigma=0.3, size=self.num_agents)
+        leverage_ratios = np.clip(leverage_ratios, 0.1, 1.8)
         firms['Debt'] = firms['Capital'] * leverage_ratios
         
         firms['Productivity'] = 1.0 # Base TFP

@@ -36,24 +36,15 @@ def test_policy_analyzer():
         shock_tick=0
     )
     
-    # Run counterfactual with 2 ticks and fewer seeds for testing speed
-    # We override config n_seeds to 1 for faster tests
-    import yaml
-    config_path = os.path.join(ROOT_DIR, "config", "config.yaml")
-    with open(config_path, "r") as f:
-        config = yaml.safe_load(f)
-        
-    old_n_seeds = config['run']['n_seeds']
-    config['run']['n_seeds'] = 1
-    with open(config_path, "w") as f:
-        yaml.safe_dump(config, f)
-        
+    # Override policy config in memory without writing to disk
+    import src.engine.policy
+    old_n_seeds = src.engine.policy.config['run'].get('n_seeds', 10)
+    src.engine.policy.config['run']['n_seeds'] = 1
+    
     try:
         scenario_data = analyzer.evaluate_intervention(intervention, ticks=2)
         assert isinstance(scenario_data, pd.DataFrame)
         assert len(scenario_data) == 2
     finally:
         # Restore configuration
-        config['run']['n_seeds'] = old_n_seeds
-        with open(config_path, "w") as f:
-            yaml.safe_dump(config, f)
+        src.engine.policy.config['run']['n_seeds'] = old_n_seeds
