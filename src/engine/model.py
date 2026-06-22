@@ -183,6 +183,7 @@ class FirmAgent(Agent):
             
         self.deposits += export_rev
         self.model.commercial_bank._deposits += export_rev
+        self.model.commercial_bank.reserves += export_rev # NEW: Exports bring in Central Bank reserves
         self.final_revenue += export_rev
         self.output += export_rev
         
@@ -206,6 +207,17 @@ class FirmAgent(Agent):
         """Phase 4: Pay wages, interest, and taxes."""
         price_level = self.model.price_level
         
+        # 0. Pay Intermediate Supply Chain Costs
+        self.deposits -= self.intermediate_cost
+        # If we assume closed loop, this money would technically credit the supplier's deposits here.
+        # For now, we must at least drain it from the buyer to prevent phantom liquidity.
+        if self.deposits < 0.0:
+            overdraft = abs(self.deposits)
+            self.debt += overdraft
+            self.model.commercial_bank._loans += overdraft
+            self.model.commercial_bank._deposits += overdraft
+            self.deposits = 0.0
+
         # 1. Pay Wages (directly to employees' deposits)
         self.wages_paid = 0.0
         for emp in self.employees:
@@ -327,8 +339,8 @@ class FirmAgent(Agent):
         # Execute Investment
         self.capital += (actual_nominal_investment / price_level)
         self.deposits -= actual_nominal_investment
-        self.model.commercial_bank._deposits -= actual_nominal_investment
-        self.model.commercial_bank.reserves -= actual_nominal_investment
+        # The money transfers to another firm's deposit account within the same bank.
+        # Therefore, aggregate bank deposits and reserves do NOT decrease.
         if self.deposits < 0.0:
             overdraft = abs(self.deposits)
             self.debt += overdraft
