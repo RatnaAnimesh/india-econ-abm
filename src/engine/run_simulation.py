@@ -2,6 +2,7 @@ import os
 import argparse
 import yaml
 import pandas as pd
+from tqdm import tqdm
 from src.engine.model import IndianEconomyModel
 
 # Determine repo root dir (3 levels up from this file)
@@ -25,8 +26,7 @@ def run_simulation(ticks=None, policy_shocks=None, save_path=None, seed=None):
     model = IndianEconomyModel(data_path=data_path, policy_shocks=policy_shocks, seed=seed)
     
     # Run the simulation loop
-    for i in range(ticks):
-        print(f"Running tick {i+1}/{ticks}...")
+    for i in tqdm(range(ticks), desc="Simulation Progress", unit="tick"):
         model.step()
         
     print("Simulation complete. Extracting macro data...")
