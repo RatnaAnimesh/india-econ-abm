@@ -70,7 +70,7 @@ class HouseholdAgent(Agent):
         if self.deposits <= 0.0:
             return
         
-        c_exp = self.deposits * (1.0 - self.mpc)
+        c_exp = self.deposits * self.mpc
         if c_exp <= 0.0:
             return
             

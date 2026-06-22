@@ -52,7 +52,8 @@ class LaborMarket:
                 
             # Randomly sample up to 5 firms to evaluate (Network search proxy)
             sample_size = min(5, len(searching_firms))
-            sampled_firms = np.random.choice(searching_firms, sample_size, replace=False)
+            import random
+            sampled_firms = random.sample(searching_firms, sample_size)
             
             best_match = None
             best_prob = 0.0
@@ -88,7 +89,7 @@ class LaborMarket:
         # Adapt wage rates for firms that couldn't fill their vacancies
         # If a firm was searching but didn't fill its vacancies, it raises its wage offer
         for firm in unmatched_firms:
-            firm.wage_rate = min(firm.wage_rate * 1.05, 0.1) # Raise wage rate, cap at 0.1
+            firm.wage_rate = firm.wage_rate * 1.05 # Removed the 0.1 hard cap
                     
     def update_reservation_wages(self):
         """Applies hysteresis to household reservation wages."""

@@ -339,6 +339,15 @@ class FirmAgent(Agent):
         # Execute Investment
         self.capital += (actual_nominal_investment / price_level)
         self.deposits -= actual_nominal_investment
+        
+        # Distribute the investment capital to a random supplier to close the SFC loop
+        if self.model.active_firms:
+            import random
+            supplier = random.choice(self.model.active_firms)
+            supplier.deposits += actual_nominal_investment
+            if not hasattr(supplier, 'final_revenue'):
+                supplier.final_revenue = 0.0
+            supplier.final_revenue += actual_nominal_investment
         # The money transfers to another firm's deposit account within the same bank.
         # Therefore, aggregate bank deposits and reserves do NOT decrease.
         if self.deposits < 0.0:
