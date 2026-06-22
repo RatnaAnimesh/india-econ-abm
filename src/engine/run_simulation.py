@@ -68,6 +68,7 @@ if __name__ == "__main__":
     parser.add_argument("--exchange_shock", type=float, default=0.0, help="Additive shock to Exchange Rate (e.g. 0.1 for 10% depreciation)")
     parser.add_argument("--carbon_price_shock", type=float, default=0.0, help="Additive shock to Carbon Price (e.g. 10.0 for carbon price shock)")
     parser.add_argument("--cbam_shock", type=float, default=0.0, help="Additive shock to CBAM export tariff rate (e.g. 0.20 for 20% tariff)")
+    parser.add_argument("--save_path", type=str, default="data/processed/simulation_results.csv", help="File path to save the resulting CSV")
     args = parser.parse_args()
     
     # Pack shocks as a policy_shocks list
@@ -83,4 +84,4 @@ if __name__ == "__main__":
     if args.cbam_shock != 0.0:
         shocks.append({'type': 'cbam_shock', 'value': args.cbam_shock, 'tick': 0})
         
-    run_simulation(ticks=args.ticks, policy_shocks=shocks)
+    run_simulation(ticks=args.ticks, policy_shocks=shocks, save_path=args.save_path)
